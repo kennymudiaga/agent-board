@@ -54,7 +54,7 @@ verify passes.
 
 ### T3 — OpenDevin integration docs — MEDIUM
 
-- `docs/opendeven/quickstart.md`: mount the MCP server (or run `ab` in
+- `docs/opendevin/quickstart.md`: mount the MCP server (or run `ab` in
   OpenDevin's sandbox); agent instructions referencing `docs/conventions.md`.
 
 **Done when:** a human can join an OpenDevin agent to a board following the doc.
