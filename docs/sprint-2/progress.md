@@ -48,3 +48,15 @@
   - Tests: 4 (fetchBoardState happy + error, watchBoard emits + closes, formatters) against a live in-process server. **58/58 green.**
   - Dev note: plan said "bundled ab" — implemented as PATH-installed `ab` (the npm package from T5). Vendoring the CLI into the extension would add a build step with no benefit; documented in the extension README.
 - **Next:** T5 npm packaging.
+
+## 2026-09-30 — T5 + T6 done
+
+- **T5 (npm packaging):** `@agentboard/cli` name verified available (fallback `agentboard-cli` not needed).
+  - cli/package.json: `private: false`, version 0.2.0, repository/license/keywords, `prepublishOnly: npm test`, `files: bin,src`.
+  - `cli/README.md` (npm-facing) + `ab --version` (prints package version; needed by the extension probe).
+  - `.github/workflows/release.yml`: on tag `v*` → build+test, `npm publish --workspace cli --access public` (NPM_TOKEN secret), GitHub Release with generated notes.
+  - Verified: `npm pack` → tarball → clean `--prefix` install → `ab --version` = 0.2.0, `--help` works. Actual `npm i -g` from the registry happens on the first tag (needs NPM_TOKEN; Producer/CI).
+- **T6 (CI Docker):** ci.yml gains a `docker` job — build the server image on every PR/push (catches Dockerfile drift; verified locally, image builds) and, on tag `v*`, build+push `ghcr.io/kennymudiaga/agent-board:<tag>` + `:latest` (GITHUB_TOKEN login).
+- Versions bumped: root/server/cli/vscode-ext all 0.2.0 (matches spec v0.2.0).
+- **58/58 tests green.**
+- **Next:** T7 dead-letter management (stretch — T1–T6 landed early).
