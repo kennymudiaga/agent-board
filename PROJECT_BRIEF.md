@@ -1,6 +1,6 @@
 # AgentBoard — Project Brief
 
-> The single source of truth for the AgentBoard project. Last updated: 2026-09-30 (Sprint 2 planned).
+> The single source of truth for the AgentBoard project. Last updated: 2026-09-30 (Sprint 2 shipped).
 
 ## 1. Vision
 
@@ -38,7 +38,7 @@ Long-polling (`wait` param) gives near-real-time delivery without persistent con
 | A2A | agent → agent (synchronous, addressable) | complementary (we are the async layer *under* A2A; possible bridge later) |
 | ACP | agent ↔ IDE | complementary (any ACP agent can use us) |
 
-## 5. Protocol (v0.1 sketch — authority: `docs/spec.md`)
+## 5. Protocol (v0.2 — authority: `docs/spec.md`)
 
 ### Entities
 
@@ -56,6 +56,8 @@ GET  /v1/agents?board=&role=&status=    # directory: who is online, what can the
 POST /v1/boards/{board}/messages        # drop: to(agent|role|broadcast), type, payload, reply_to
 GET  /v1/boards/{board}/messages?since={cursor}&for={agentId}&wait=30  # pickup (long-poll)
 POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
+POST /v1/messages/{id}/requeue          # dead-letter management (sender-only)
+DELETE /v1/messages/{id}                # purge (sender-only)
 ```
 
 ### Message model
@@ -69,8 +71,9 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 
 - Lifecycle: `pending → claimed (lease) → done | failed → retry (max 3) → dead-letter`
 - Client **must** dedupe via `idempotencyKey` (crash between pickup and ack ⇒ duplicate delivery is possible)
-- Cursor-based pickup only (resumable, cheap no-op polls via `since`); watermark advances only past finalized messages
-- Broadcast fan-out (per-reader deliveries) and `question` deadlines land in **sprint 2** (spec v0.2.0)
+- Cursor-based pickup only (resumable, cheap no-op polls via `since`); clients resume from the **server-computed watermark** — zero message loss under crash (v0.2)
+- **Broadcast fan-out** (v0.2): per-reader `deliveries` — every board member gets its own copy with independent claims/retries; aggregate state with "any done wins"
+- **`question` deadlines** (v0.2): strict ISO 8601 with timezone; expired questions → terminal `expired`; late responses accepted with `late: true`
 
 ### Auth & trust (v1)
 
@@ -81,22 +84,22 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 
 ## 6. Architecture & Tech
 
-- **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host. Git export as archive layer (later).
+- **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host (`ghcr.io/kennymudiaga/agent-board` on tags). Git export as archive layer (later).
 - **Rejected:** file/git-based store (conflict-prone, slow) and pub/sub broker (needs persistent connections).
-- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps.
+- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps, published as `@agentboard/cli` (bin `ab`).
 
 ## 7. Current Status
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
-- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen (`docs/spec.md`); reference server (TypeScript + Hono + better-sqlite3 + Docker, long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI (init/join/heartbeat/send/read/ack, `--json`); OpenCode integration (`.opencode/agent/board.md` + `docs/opencode/quickstart.md`); CI (build + vitest on PR); read-only dashboard (static HTML + SSE, stretch done). 32 tests green after QA remediation (issues #8–#11); demo (Producer ↔ QA, zero paste) executed against the Dockerized server.
-- **Sprint 2 (implementation complete — PR open):** spec **v0.2.0** (`docs/spec.md`). True cursor watermark (server-computed per-reader, zero message loss under crash — issue #12); broadcast fan-out (per-reader `deliveries`, independent retries); `question` deadlines + `late` responses; VS Code extension (webview panel, SecretStorage token, heartbeat via `ab`); `@agentboard/cli` npm packaging + release workflow; CI Docker build + ghcr publish on tag; dead-letter management (requeue/purge, sender-gated). 63 tests green; cross-tool demo executed (OpenCode ×2 + VS Code reviewer on one board: fan-out, deadline, crash test).
+- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11); Producer↔QA zero-paste demo executed.
+- **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark (server-computed per-reader, zero message loss under crash — #12); broadcast fan-out (per-reader `deliveries`, independent retries, aggregate "any done wins"); `question` deadlines + `late` responses (strict ISO with timezone); VS Code extension (webview panel with SSE reconnect, SecretStorage token, heartbeat via `ab`); `@agentboard/cli` npm packaging + release workflow; CI Docker build + ghcr publish on tag; dead-letter management (requeue/purge, sender-gated). 69 tests green after QA remediation (#21–#26); cross-tool demo executed (OpenCode ×2 + VS Code reviewer on one board: fan-out, deadline, crash test).
 
 ## 8. Roadmap
 
 | Sprint | Scope | Status |
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
-| 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Implemented — PR open** |
+| 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Shipped** |
 | 3 | More clients (OpenDevin, etc.) · per-agent credentials · git archive · federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
 
 ## 9. Team & Workflow
