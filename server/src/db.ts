@@ -598,6 +598,42 @@ export class Store {
 
   // ------------------------------------------------------------------ misc
 
+  /**
+   * Dead-letter requeue (v0.2, spec §5.7): dead -> pending with attempts reset.
+   * Sender-only. Broadcasts reset every reader's delivery.
+   */
+  requeueMessage(
+    id: string,
+    sender: string,
+    now: number,
+  ): { message: MessageRecord } | { notFound: true } | { forbidden: true } | { wrongState: true } {
+    const row = this.getRow(id);
+    if (!row) return { notFound: true };
+    if (row.from_agent !== sender) return { forbidden: true };
+    if (row.state !== 'dead') return { wrongState: true };
+    if (row.to_kind === 'broadcast') {
+      this.db
+        .prepare("UPDATE deliveries SET state = 'pending', attempts = 0, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE message_id = ?")
+        .run(now, id);
+      this.recomputeMessageState(id, now);
+    } else {
+      this.db
+        .prepare("UPDATE messages SET state = 'pending', attempts = 0, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+        .run(now, id);
+    }
+    return { message: this.getMessage(id)! };
+  }
+
+  /** Delete a message and its deliveries (v0.2, spec §5.7). Sender-only. */
+  deleteMessage(id: string, sender: string): { ok: true } | { notFound: true } | { forbidden: true } {
+    const row = this.getRow(id);
+    if (!row) return { notFound: true };
+    if (row.from_agent !== sender) return { forbidden: true };
+    this.db.prepare('DELETE FROM deliveries WHERE message_id = ?').run(id);
+    this.db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+    return { ok: true };
+  }
+
   private getRow(id: string): MessageRow | undefined {
     return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as MessageRow | undefined;
   }

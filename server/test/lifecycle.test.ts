@@ -781,4 +781,98 @@ describe('message lifecycle', () => {
       expect(found.deliveries.every((d: { state: string }) => d.state === 'expired')).toBe(true);
     });
   });
+
+  describe('dead-letter management (T7)', () => {
+    async function killToDead(app: ReturnType<typeof createApp>, id: string, reader: string) {
+      for (let i = 0; i < 3; i++) {
+        await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: reader });
+        await api(app, 'POST', `/v1/messages/${id}/ack`, { agent: reader, body: { status: 'failed', error: 'boom' } });
+      }
+    }
+
+    it('requeue returns a dead message to the queue with attempts reset', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1', { roles: ['producer'] });
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const sent = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'request', payload: { text: 'resurrect me' } },
+        })
+      ).json();
+      await killToDead(app, sent.message.id, 'qa-1');
+
+      const dead = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=dead', { agent: 'qa-1' })).json();
+      expect(dead.messages).toHaveLength(1);
+
+      const requeued = await api(app, 'POST', `/v1/messages/${sent.message.id}/requeue`, { agent: 'producer-1' });
+      expect(requeued.status).toBe(200);
+      expect((await requeued.json()).message).toMatchObject({ state: 'pending', attempts: 0 });
+
+      // Redeliverable with a fresh attempt count.
+      const mail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+      expect(mail.messages[0].id).toBe(sent.message.id);
+      expect(mail.messages[0].attempts).toBe(1);
+    });
+
+    it('requeue is sender-only and dead-only', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const sent = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'request', payload: { text: 'x' } },
+        })
+      ).json();
+      // Non-sender requeue.
+      expect((await api(app, 'POST', `/v1/messages/${sent.message.id}/requeue`, { agent: 'qa-1' })).status).toBe(403);
+      // Requeueing a non-dead message.
+      expect((await api(app, 'POST', `/v1/messages/${sent.message.id}/requeue`, { agent: 'producer-1' })).status).toBe(409);
+    });
+
+    it('requeue resets every delivery of a dead broadcast', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const sent = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'broadcast', type: 'note', payload: { text: 'broadcast dead' } },
+        })
+      ).json();
+      await killToDead(app, sent.message.id, 'qa-1');
+      await killToDead(app, sent.message.id, 'qa-2');
+      // The sender is a member too (spec §3.2) — its delivery must also be dead
+      // for the aggregate to reach 'dead' and requeue to apply.
+      await killToDead(app, sent.message.id, 'producer-1');
+
+      const requeued = await api(app, 'POST', `/v1/messages/${sent.message.id}/requeue`, { agent: 'producer-1' });
+      expect(requeued.status).toBe(200);
+      expect((await requeued.json()).message.state).toBe('pending');
+
+      // Both readers get a fresh copy again.
+      for (const reader of ['qa-1', 'qa-2']) {
+        const mail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: reader })).json();
+        expect(mail.messages[0].delivery).toMatchObject({ readerId: reader, attempts: 1 });
+      }
+    });
+
+    it('purge deletes the message and its deliveries (sender-only)', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const sent = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'note', payload: { text: 'delete me' } },
+        })
+      ).json();
+      expect((await api(app, 'DELETE', `/v1/messages/${sent.message.id}`, { agent: 'qa-1' })).status).toBe(403);
+      expect((await api(app, 'DELETE', `/v1/messages/${sent.message.id}`, { agent: 'producer-1' })).status).toBe(200);
+      expect((await api(app, 'POST', `/v1/messages/${sent.message.id}/ack`, { agent: 'qa-1', body: { status: 'done' } })).status).toBe(404);
+      expect((await api(app, 'DELETE', `/v1/messages/${sent.message.id}`, { agent: 'producer-1' })).status).toBe(404);
+    });
+  });
 });

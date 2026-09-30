@@ -423,5 +423,27 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     return c.json({ message: result.message }, 200);
   });
 
+  // --- POST /v1/messages/:id/requeue + DELETE (dead-letter mgmt, §5.7) ------
+
+  app.post('/v1/messages/:id/requeue', async (c) => {
+    const id = c.req.param('id');
+    if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
+    const result = store.requeueMessage(id, c.get('agentId'), Date.now());
+    if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
+    if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can requeue a message');
+    if ('wrongState' in result) return error(c, 409, 'state_conflict', 'only dead messages can be requeued');
+    mailbox.emit('updated', result.message.board);
+    return c.json({ message: result.message }, 200);
+  });
+
+  app.delete('/v1/messages/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
+    const result = store.deleteMessage(id, c.get('agentId'));
+    if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
+    if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can purge a message');
+    return c.json({ ok: true, deleted: id }, 200);
+  });
+
   return app;
 }

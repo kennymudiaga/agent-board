@@ -312,6 +312,53 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('dead/requeue/purge manage the dead-letter queue (T7)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'flaky', '--json'], { cwd: dir });
+      const msg = JSON.parse(sent.stdout);
+
+      // Fail to dead (3 failed acks).
+      for (let i = 1; i <= 3; i++) {
+        await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+        await runCli(['ack', '--id', msg.id, '--status', 'failed', '--error', `boom ${i}`], { cwd: dir });
+      }
+
+      const dead = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
+      expect(dead.code).toBe(0, dead.stderr);
+      expect(dead.stdout).toContain(msg.id);
+
+      // Requeue (sender) -> redeliverable.
+      const requeued = await runCli(['requeue', '--id', msg.id], { cwd: dir });
+      expect(requeued.code).toBe(0, requeued.stderr);
+      expect(requeued.stdout).toContain('pending');
+      const mail = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(mail.stdout).toContain(msg.id);
+
+      // A non-sender cannot purge.
+      const other = makeWorkspace();
+      try {
+        await runCli(['init', '--agent-id', 'other-1'], { cwd: other });
+        const denied = await runCli(['purge', '--id', msg.id], { cwd: other });
+        expect(denied.code).not.toBe(0);
+        expect(denied.stderr).toContain('sender');
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+
+      // Sender purges; message is gone.
+      const purged = await runCli(['purge', '--id', msg.id], { cwd: dir });
+      expect(purged.code).toBe(0, purged.stderr);
+      const deadAgain = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
+      expect(deadAgain.stdout).not.toContain(msg.id);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
     const dir = makeWorkspace();
     try {

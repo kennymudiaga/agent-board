@@ -60,3 +60,12 @@
 - Versions bumped: root/server/cli/vscode-ext all 0.2.0 (matches spec v0.2.0).
 - **58/58 tests green.**
 - **Next:** T7 dead-letter management (stretch — T1–T6 landed early).
+
+## 2026-09-30 — T7 done
+
+- **T7 (dead-letter management, stretch):**
+  - Server: `POST /v1/messages/{id}/requeue` (dead → pending, attempts reset; broadcasts reset every delivery) + `DELETE /v1/messages/{id}` (message + deliveries). Both **sender-only** → 403 for others (spec §5.7; new `403 forbidden` + `409 state_conflict` codes in §8).
+  - CLI: `ab dead --board` · `ab requeue --id` · `ab purge --id`.
+  - Caught in testing: a broadcast's sender is a member too, so "all deliveries dead" includes the sender's copy — the aggregate test now kills it explicitly (documented behavior, not a bug).
+  - Tests: 4 server + 1 CLI end-to-end (fail→dead→list→requeue→redeliver→purge, non-sender denied). **63/63 green.**
+- **Next:** final verification (build, suite, docker, sprint-2 demo end-to-end), handoff, PR.

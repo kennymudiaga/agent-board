@@ -253,6 +253,31 @@ The dashboard refetches state via the REST API on each event. No message bodies 
 
 Errors: `401` bad token.
 
+### 5.7 Dead-letter management (v0.2)
+
+Dead messages (3 failed attempts — see §6.1) are visible via the `status=dead`
+observability filter (§5.4). The sender can recover or remove them:
+
+#### `POST /v1/messages/{id}/requeue` — requeue
+
+Returns a dead message to the queue: `dead → pending`, `attempts` reset to `0`
+(for broadcasts, every reader's delivery is reset). Requires `X-Agent-ID` =
+the message **sender**.
+
+Response `200` — the message (`state: "pending"`).
+
+Errors: `403` requeue by a non-sender · `404` unknown message · `409` requeueing a non-dead message.
+
+#### `DELETE /v1/messages/{id}` — purge
+
+Permanently deletes the message and all its deliveries (reply threads keep
+their ids as plain strings — no cascades). Requires `X-Agent-ID` = the message
+**sender**.
+
+Response `200` — `{ "ok": true, "deleted": "<id>" }`.
+
+Errors: `403` purge by a non-sender · `404` unknown message.
+
 ## 6. Delivery semantics
 
 ### 6.1 Lifecycle
@@ -312,9 +337,11 @@ Every error response:
 |---|---|---|
 | `400` | `bad_request` | Malformed JSON, missing required field, invalid query param. |
 | `401` | `unauthorized` | Missing/invalid bearer token, or missing `X-Agent-ID`. |
-| `404` | `not_found` | Unknown board (on pickup), unknown message id (on ack). |
+| `403` | `forbidden` | Valid identity but not the message sender (requeue/purge, §5.7). |
+| `404` | `not_found` | Unknown board (on pickup), unknown message id (on ack/requeue/purge). |
 | `409` | `duplicate_idempotency_key` | Same sender + same `idempotencyKey` — carries `originalMessageId`. |
 | `409` | `ack_conflict` | Ack from non-claimer, or invalid state transition. |
+| `409` | `state_conflict` | Requeueing a non-dead message (§5.7). |
 | `422` | `unprocessable` | Semantically invalid: unknown `type`/`priority`/`status`, malformed `to`, bad identifiers. |
 
 ## 9. Out of scope (v0.1)

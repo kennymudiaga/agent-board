@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -29,6 +29,12 @@ commands:
              ab read --board <name> [--wait <sec>] [--since <cursor>] [--ack claimed|done|failed] [--error <text>] [--once]
   ack        acknowledge a claimed message
              ab ack --id <message-id> --status claimed|done|failed [--error <text>]
+  dead       list dead-lettered messages on a board
+             ab dead --board <name>
+  requeue    return a dead message to the queue (sender only)
+             ab requeue --id <message-id>
+  purge      delete a message permanently (sender only)
+             ab purge --id <message-id>
 
 global options:
   --json     machine-readable JSON on stdout
@@ -71,6 +77,9 @@ const COMMANDS = {
   send: cmdSend,
   read: cmdRead,
   ack: cmdAck,
+  dead: cmdDead,
+  requeue: cmdRequeue,
+  purge: cmdPurge,
 };
 
 async function main() {

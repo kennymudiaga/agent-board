@@ -234,3 +234,44 @@ export async function cmdAck(flags, json) {
     console.log(`acked ${m.id} -> ${m.state}`);
   }
 }
+
+// ------------------------------------------------------------------ dead / requeue / purge (v0.2 §5.7)
+
+export async function cmdDead(flags, json) {
+  const cfg = loadConfig();
+  const board = flags.board ?? cfg.boards[0];
+  if (!board) usage('dead requires --board (or join a board first)');
+  const data = await apiCall(cfg, 'GET', `/v1/boards/${board}/messages?status=dead`, { agent: cfg.agentId });
+  if (json) {
+    for (const m of data.messages) console.log(JSON.stringify(m));
+  } else if (data.messages.length === 0) {
+    console.log(`no dead messages on ${board}`);
+  } else {
+    for (const m of data.messages) console.log(`[dead] ${formatMessage(m)}`);
+  }
+}
+
+export async function cmdRequeue(flags, json) {
+  const cfg = loadConfig();
+  const id = flags.id ?? flags._[0];
+  if (!id) usage('requeue requires --id', 'ab requeue --id msg_xxx');
+  const data = await apiCall(cfg, 'POST', `/v1/messages/${id}/requeue`, { agent: cfg.agentId });
+  const m = data.message;
+  if (json) {
+    console.log(JSON.stringify(m));
+  } else {
+    console.log(`requeued ${m.id} -> ${m.state} (attempts reset)`);
+  }
+}
+
+export async function cmdPurge(flags, json) {
+  const cfg = loadConfig();
+  const id = flags.id ?? flags._[0];
+  if (!id) usage('purge requires --id', 'ab purge --id msg_xxx');
+  await apiCall(cfg, 'DELETE', `/v1/messages/${id}`, { agent: cfg.agentId });
+  if (json) {
+    console.log(JSON.stringify({ ok: true, deleted: id }));
+  } else {
+    console.log(`purged ${id}`);
+  }
+}
