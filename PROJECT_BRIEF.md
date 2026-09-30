@@ -1,6 +1,6 @@
 # AgentBoard — Project Brief
 
-> The single source of truth for the AgentBoard project. Last updated: 2026-09-30 (Sprint 0).
+> The single source of truth for the AgentBoard project. Last updated: 2026-09-30 (Sprint 2 planned).
 
 ## 1. Vision
 
@@ -38,7 +38,7 @@ Long-polling (`wait` param) gives near-real-time delivery without persistent con
 | A2A | agent → agent (synchronous, addressable) | complementary (we are the async layer *under* A2A; possible bridge later) |
 | ACP | agent ↔ IDE | complementary (any ACP agent can use us) |
 
-## 5. Protocol v0.1 (Sketch)
+## 5. Protocol (v0.1 sketch — authority: `docs/spec.md`)
 
 ### Entities
 
@@ -69,7 +69,8 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 
 - Lifecycle: `pending → claimed (lease) → done | failed → retry (max 3) → dead-letter`
 - Client **must** dedupe via `idempotencyKey` (crash between pickup and ack ⇒ duplicate delivery is possible)
-- Cursor-based pickup only (resumable, cheap no-op polls via `since`)
+- Cursor-based pickup only (resumable, cheap no-op polls via `since`); watermark advances only past finalized messages
+- Broadcast fan-out (per-reader deliveries) and `question` deadlines land in **sprint 2** (spec v0.2.0)
 
 ### Auth & trust (v1)
 
@@ -82,31 +83,32 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 
 - **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host. Git export as archive layer (later).
 - **Rejected:** file/git-based store (conflict-prone, slow) and pub/sub broker (needs persistent connections).
-- Proposed stack (dev team confirms): TypeScript, Hono, better-sqlite3, vitest, Docker.
+- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps.
 
 ## 7. Current Status
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
-- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen (`docs/spec.md`); reference server (TypeScript + Hono + better-sqlite3 + Docker, long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI (init/join/heartbeat/send/read/ack, `--json`); OpenCode integration (`.opencode/agent/board.md` + `docs/opencode/quickstart.md`); CI (build + vitest on PR); read-only dashboard (static HTML + SSE, stretch done). 26 tests green; demo (Producer ↔ QA, zero paste) executed against the Dockerized server.
+- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen (`docs/spec.md`); reference server (TypeScript + Hono + better-sqlite3 + Docker, long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI (init/join/heartbeat/send/read/ack, `--json`); OpenCode integration (`.opencode/agent/board.md` + `docs/opencode/quickstart.md`); CI (build + vitest on PR); read-only dashboard (static HTML + SSE, stretch done). 32 tests green after QA remediation (issues #8–#11); demo (Producer ↔ QA, zero paste) executed against the Dockerized server.
+- **Sprint 2 (planned — `docs/sprint-2/plan.md`, issues #13–#19):** cursor watermark hardening (issue #12), broadcast fan-out (per-reader deliveries, spec v0.2.0), `question` deadlines, VS Code extension (second provider), `@agentboard/cli` npm packaging, CI Docker build; stretch: dead-letter management.
 
 ## 8. Roadmap
 
 | Sprint | Scope | Status |
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
-| 2 | More clients (VS Code, OpenDevin) · threads & deadlines · git archive · SSE dashboard | Planned |
-| 3 | Federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
+| 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build (stretch: dead-letter mgmt) | **Planned** — `docs/sprint-2/plan.md` |
+| 3 | More clients (OpenDevin, etc.) · per-agent credentials · git archive · federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
 
 ## 9. Team & Workflow
 
 - **Producer (Remy):** plans sprints, triages, reviews & merges PRs (regular merge, never squash/rebase), maintains this brief.
 - **Dev team:** implements per `docs/sprint-N/plan.md`, works on branches, opens PRs.
 - **QA (Ivy):** signs off critical sprints before merge.
-- Sprint artifacts: `docs/sprint-N/{plan,progress,done}.md`.
+- Sprint artifacts: `docs/sprint-N/{plan,progress,done}.md`, signoff in `docs/qa/`.
 
 ## 10. Open Questions
 
 1. Self-host only, or SaaS later? (v1: self-host — trust)
-2. Per-agent credentials vs shared workspace token? (v1: shared token + trusted agent IDs)
-3. Git-based archive in v1? (leaning: sprint 2)
+2. Per-agent credentials vs shared workspace token? (v1: shared token + trusted agent IDs; decision deferred to sprint 3)
+3. Git-based archive? (leaning: sprint 3 — cut from sprint 2 for scope)
 4. A2A bridge eventually? (leaning: not competing — we're the async layer under it)
