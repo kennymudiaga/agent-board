@@ -370,6 +370,35 @@ function hashOf(s) {
   return execFileSync('git', ['hash-object', '--stdin'], { input: s, encoding: 'utf8' }).trim();
 }
 
+export async function cmdWhoami(flags, json) {
+  const cfg = loadConfig(process.cwd(), { requireFile: false });
+  const info = {
+    agentId: cfg.agentId,
+    roles: cfg.roles,
+    boards: cfg.boards,
+    provider: cfg.provider,
+    server: cfg.server,
+    configFile: existsSync(cfg.path),
+    env: {
+      server: process.env.AB_SERVER !== undefined,
+      token: process.env.AB_TOKEN !== undefined,
+      agentId: process.env.AB_AGENT_ID !== undefined,
+      roles: process.env.AB_ROLES !== undefined,
+    },
+  };
+  if (json) {
+    console.log(JSON.stringify(info));
+  } else {
+    console.log(`agent   : ${info.agentId ?? '(unset)'}`);
+    console.log(`roles   : ${info.roles.join(', ') || '(none)'}`);
+    console.log(`boards  : ${info.boards.join(', ') || '(none)'}`);
+    console.log(`provider: ${info.provider ?? '(unset)'}`);
+    console.log(`server  : ${info.server ?? '(unset)'}`);
+    console.log(`config  : ${info.configFile ? cfg.path : 'none (env-only)'}`);
+    console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles}`);
+  }
+}
+
 export async function cmdToken(flags, json) {
   const cfg = loadConfig();
   const agentId = flags.agentId ?? flags._[0];

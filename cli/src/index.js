@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -39,6 +39,8 @@ commands:
              ab archive --board <name> --git <dir>
   token      mint or revoke a per-agent token (workspace token required; admin-only)
              ab token --agent-id <id> [--revoke]
+  whoami     show this agent's identity and configuration
+             ab whoami [--json]
 
 global options:
   --json     machine-readable JSON on stdout
@@ -86,6 +88,7 @@ const COMMANDS = {
   purge: cmdPurge,
   archive: cmdArchive,
   token: cmdToken,
+  whoami: cmdWhoami,
 };
 
 async function main() {
