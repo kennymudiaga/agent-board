@@ -26,6 +26,22 @@ jobs:
       - name: Test
         run: npm test
 
+  extension-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: VS Code extension host-wiring tests (xvfb)
+        run: xvfb-run -a npm run test:ui --workspace vscode-ext
+
   docker:
     runs-on: ubuntu-latest
     steps:
