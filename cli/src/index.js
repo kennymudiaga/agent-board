@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -35,6 +35,8 @@ commands:
              ab requeue --id <message-id>
   purge      delete a message permanently (sender only)
              ab purge --id <message-id>
+  archive    export a board to a git repo as markdown history (threads intact)
+             ab archive --board <name> --git <dir>
 
 global options:
   --json     machine-readable JSON on stdout
@@ -80,6 +82,7 @@ const COMMANDS = {
   dead: cmdDead,
   requeue: cmdRequeue,
   purge: cmdPurge,
+  archive: cmdArchive,
 };
 
 async function main() {

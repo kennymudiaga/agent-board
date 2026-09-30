@@ -29,6 +29,14 @@ afterAll(async () => {
   store.close();
 });
 
+function gitLog(dir) {
+  return new Promise((resolvePromise) => {
+    execFile('git', ['log', '--pretty=%s'], { cwd: dir }, (err, stdout) => {
+      resolvePromise(err ? [] : stdout.split('\n').filter(Boolean));
+    });
+  });
+}
+
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
     execFile(
@@ -409,6 +417,57 @@ describe('ab CLI against the reference server', () => {
       expect(purged.code).toBe(0, purged.stderr);
       const deadAgain = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
       expect(deadAgain.stdout).not.toContain(msg.id);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('archive exports the board to markdown with one commit per thread (T5)', async () => {
+    const dir = makeWorkspace();
+    const archiveDir = join(dir, 'archive');
+    const board = 'archive-board'; // fresh board — deterministic thread count
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', board], { cwd: dir });
+      await runCli(['heartbeat', '--once', '--board', board], { cwd: dir });
+
+      // A request thread + a response.
+      const req = await runCli(['send', '--board', board, '--to', 'agent:cli-agent', '--type', 'request', '--message', 'review PR #12', '--json'], { cwd: dir });
+      const reqMsg = JSON.parse(req.stdout);
+      const resp = await runCli(['send', '--board', board, '--to', 'agent:cli-agent', '--type', 'response', '--reply-to', reqMsg.id, '--message', 'approved', '--json'], { cwd: dir });
+      const respMsg = JSON.parse(resp.stdout);
+
+      const run = await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      expect(run.code).toBe(0, run.stderr);
+      expect(run.stdout).toContain('archived');
+
+      // Markdown history exists and is readable.
+      const threadFile = join(archiveDir, 'threads', `${reqMsg.id}.md`);
+      expect(existsSync(threadFile)).toBe(true);
+      const md = readFileSync(threadFile, 'utf8');
+      expect(md).toContain('review PR #12');
+      expect(md).toContain('approved');
+      expect(md).toContain(reqMsg.id);
+      expect(md).toContain(respMsg.id);
+      expect(readFileSync(join(archiveDir, 'README.md'), 'utf8')).toContain(`Board ${board}`);
+
+      // One commit per thread (request + response share one thread) + index commit.
+      const log = await gitLog(archiveDir);
+      expect(log.filter((m) => m.includes('thread'))).toHaveLength(1);
+      expect(log.filter((m) => m.includes('index'))).toHaveLength(1);
+
+      // Idempotent: a second run adds no commits.
+      await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      expect(await gitLog(archiveDir)).toEqual(log);
+
+      // Closing the thread (all messages terminal) produces a new commit.
+      const mail = await runCli(['read', '--board', board, '--wait', '0', '--once'], { cwd: dir });
+      expect(mail.stdout).toContain(reqMsg.id);
+      await runCli(['ack', '--id', reqMsg.id, '--status', 'done'], { cwd: dir });
+      await runCli(['ack', '--id', respMsg.id, '--status', 'done'], { cwd: dir });
+      await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      const log2 = await gitLog(archiveDir);
+      expect(log2.filter((m) => m.includes('closed'))).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

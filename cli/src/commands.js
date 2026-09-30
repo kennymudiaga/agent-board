@@ -2,7 +2,9 @@
  * `ab` CLI commands — one function per subcommand.
  * Every command accepts `json` (--json) for machine-readable stdout.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
 import { CONFIG_FILE, configPath, loadConfig, parseList, saveConfig } from './config.js';
 
@@ -239,7 +241,134 @@ export async function cmdAck(flags, json) {
   }
 }
 
-// ------------------------------------------------------------------ dead / requeue / purge (v0.2 §5.7)
+// ------------------------------------------------------------------ archive (v0.2.1, brief §10.3)
+
+const ARCHIVE_STATE = '.agentboard-archive.json';
+
+function git(dir, args) {
+  return execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function markdownMessage(m) {
+  const payload = typeof m.payload === 'string' ? m.payload : JSON.stringify(m.payload, null, 2);
+  const meta = [
+    `${m.id} · seq ${m.seq} · ${m.from} → ${m.to} · [${m.type}] · ${m.state}`,
+    `posted ${m.createdAt}${m.replyTo ? ` · replies to ${m.replyTo}` : ''}${m.deadline ? ` · deadline ${m.deadline}` : ''}${m.late ? ' · late' : ''}`,
+  ].join('\n\n');
+  return `### ${m.id}\n\n${meta}\n\n\`\`\`json\n${payload}\n\`\`\`\n`;
+}
+
+export async function cmdArchive(flags, json) {
+  const cfg = loadConfig();
+  const board = flags.board ?? cfg.boards[0];
+  if (!board) usage('archive requires --board', 'ab archive --board sprint-7 --git ./archive');
+  const dir = flags.git ?? flags._[0];
+  if (!dir) usage('archive requires --git <dir>', 'ab archive --board sprint-7 --git ./archive');
+
+  // Read-only full-board view (identity-less observability — never claims).
+  const data = await apiCall(cfg, 'GET', `/v1/boards/${board}/messages`);
+  const messages = data.messages;
+
+  // Group into threads by replyTo chains (root = no replyTo or unknown target).
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const roots = messages.filter((m) => !m.replyTo || !byId.has(m.replyTo));
+  const threadOf = new Map();
+  for (const m of messages) {
+    let cur = m;
+    const seen = new Set();
+    while (cur.replyTo && byId.has(cur.replyTo) && !seen.has(cur.replyTo)) {
+      seen.add(cur.replyTo);
+      cur = byId.get(cur.replyTo);
+    }
+    threadOf.set(m.id, cur.id);
+  }
+  const threadMessages = new Map();
+  for (const m of messages) {
+    const rootId = threadOf.get(m.id);
+    if (!threadMessages.has(rootId)) threadMessages.set(rootId, []);
+    threadMessages.get(rootId).push(m);
+  }
+
+  mkdirSync(resolve(dir, 'threads'), { recursive: true });
+  const statePath = resolve(dir, ARCHIVE_STATE);
+  let state = {};
+  if (existsSync(statePath)) {
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf8'));
+    } catch {
+      /* fresh state */
+    }
+  }
+  if (!gitSafe(dir)) git(dir, ['init', '-q']);
+  git(dir, ['config', 'user.email', 'agentboard@localhost']);
+  git(dir, ['config', 'user.name', 'AgentBoard Archive']);
+
+  const committed = [];
+  const rootsSorted = [...threadMessages.keys()].sort();
+  // Index file.
+  const index = [
+    `# Board ${board} — archive`,
+    '',
+    `${messages.length} messages · ${threadMessages.size} threads`,
+    '',
+    ...rootsSorted.map((rootId, i) => `${i + 1}. [${rootId}](${encodeURIComponent(`${rootId}.md`)}) — ${threadMessages.get(rootId).length} message(s)`),
+    '',
+  ].join('\n');
+  writeFileSync(resolve(dir, 'README.md'), index);
+
+  for (const rootId of rootsSorted) {
+    const msgs = threadMessages.get(rootId).sort((a, b) => a.seq - b.seq);
+    const closed = msgs.every((m) => ['done', 'dead', 'expired'].includes(m.state));
+    const body = [
+      `# Thread ${rootId}`,
+      '',
+      `Status: ${closed ? 'closed' : 'open'} · ${msgs.length} message(s)`,
+      '',
+      ...msgs.map(markdownMessage),
+    ].join('\n');
+    const file = resolve(dir, 'threads', `${rootId}.md`);
+    writeFileSync(file, body);
+
+    // Commit only when the thread's content changed (one commit per thread).
+    const prev = state.threads?.[rootId]?.hash;
+    const hash = hashOf(body);
+    if (prev !== hash) {
+      git(dir, ['add', '-A']);
+      git(dir, ['commit', '-q', '-m', `board ${board}: thread ${rootId}${closed ? ' (closed)' : ''}`]);
+      committed.push(rootId);
+    }
+    state.threads = state.threads ?? {};
+    state.threads[rootId] = { hash, closed };
+  }
+  state.board = board;
+  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  try {
+    git(dir, ['add', '-A']); // state file + index
+    git(dir, ['commit', '-q', '-m', `board ${board}: archive index`]);
+  } catch {
+    /* nothing changed — fine */
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ board, dir, threads: threadMessages.size, committed, messages: messages.length }));
+  } else if (committed.length === 0) {
+    console.log(`archive up to date: ${threadMessages.size} thread(s) on ${board}`);
+  } else {
+    console.log(`archived ${committed.length} thread(s) of ${threadMessages.size} on ${board} → ${dir}`);
+  }
+}
+
+function gitSafe(dir) {
+  try {
+    return git(dir, ['rev-parse', '--is-inside-work-tree']) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function hashOf(s) {
+  return execFileSync('git', ['hash-object', '--stdin'], { input: s, encoding: 'utf8' }).trim();
+}
 
 export async function cmdDead(flags, json) {
   const cfg = loadConfig();
