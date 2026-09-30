@@ -473,6 +473,58 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('token minting binds identity: an agent cannot act as another (T6)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir); // workspace token from the harness env
+      await runCli(['heartbeat', '--once', '--board', 'sprint-7'], { cwd: dir });
+
+      // Mint a token for qa-1 (workspace token = admin).
+      const minted = await runCli(['token', '--agent-id', 'qa-1', '--json'], { cwd: dir });
+      expect(minted.code).toBe(0, minted.stderr);
+      const { token } = JSON.parse(minted.stdout);
+      expect(token).toMatch(/^abt_/);
+
+      // As qa-1 with its own token: heartbeat works (identity from token).
+      const qaDir = makeWorkspace();
+      try {
+        const asQa = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(asQa.code).toBe(0, asQa.stderr);
+
+        // Impersonation: token of qa-1 with a different agent id -> 401.
+        const impostor = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'dev-1', AB_TOKEN: token },
+        });
+        expect(impostor.code).not.toBe(0);
+        expect(impostor.stderr).toContain('does not match');
+
+        // An agent token cannot mint (admin-only).
+        const noMint = await runCli(['token', '--agent-id', 'dev-1'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(noMint.code).not.toBe(0);
+
+        // Revoke via the workspace token -> qa-1's token stops working.
+        const revoked = await runCli(['token', '--agent-id', 'qa-1', '--revoke'], { cwd: dir });
+        expect(revoked.code).toBe(0, revoked.stderr);
+        const dead = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(dead.code).not.toBe(0);
+      } finally {
+        rmSync(qaDir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
     const dir = makeWorkspace();
     try {

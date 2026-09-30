@@ -370,6 +370,28 @@ function hashOf(s) {
   return execFileSync('git', ['hash-object', '--stdin'], { input: s, encoding: 'utf8' }).trim();
 }
 
+export async function cmdToken(flags, json) {
+  const cfg = loadConfig();
+  const agentId = flags.agentId ?? flags._[0];
+  if (!agentId) usage('token requires --agent-id', 'ab token --agent-id qa-1   (needs the workspace token; admin-only)');
+  if (flags.revoke) {
+    await apiCall(cfg, 'DELETE', `/v1/tokens/${agentId}`, { agent: cfg.agentId });
+    if (json) {
+      console.log(JSON.stringify({ ok: true, revoked: agentId }));
+    } else {
+      console.log(`revoked token for ${agentId}`);
+    }
+    return;
+  }
+  const data = await apiCall(cfg, 'POST', '/v1/tokens', { body: { agentId } });
+  if (json) {
+    console.log(JSON.stringify(data));
+  } else {
+    console.log(`token for ${agentId}: ${data.token}`);
+    console.log('store it now — it is only shown once. Use it as AB_TOKEN (or ab init --token).');
+  }
+}
+
 export async function cmdDead(flags, json) {
   const cfg = loadConfig();
   const board = flags.board ?? cfg.boards[0];

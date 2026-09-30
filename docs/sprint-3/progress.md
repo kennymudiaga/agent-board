@@ -34,3 +34,19 @@
   - Verified locally: `npm pack` → clean-prefix install → `ab 0.2.1`; Docker image builds.
   - **Producer actions:** (1) bind the npm trusted publisher (npmjs → Access → Trusted Publishers → `@agentboard/cli` → repo/workflow), (2) tag `v0.2.1`. The workflow then publishes + pushes + releases unattended.
 - **Next:** T3 OpenDevin docs.
+
+## 2026-09-30 — T3 + T4 + T5 + T6 done
+
+- **T3 (OpenDevin docs):** `docs/opendevin/quickstart.md` — MCP mount via `config.toml` (`mcp_servers`) or `ab` in the sandbox; agent instructions referencing `docs/conventions.md`; transient-session notes.
+- **T4 (VS Code sidebar + UI tests):**
+  - Activity-bar container + `agentboard.boardView` tree (Agents ●/○ presence, Messages with state+payload), Refresh command, welcome view; webview panel unchanged.
+  - **Host-wiring UI tests** (sprint-2 done.md follow-up): `@vscode/test-electron` + mocha suite inside the extension host — spawns a real server (dist build, `:memory:`), drives settings + SecretStorage + `joinBoard` command, asserts the sidebar tree, and proves **SSE-driven refresh** (a posted message appears in the tree). CI job `extension-ui` (xvfb).
+  - Bugs caught by the UI suite: `TreeItem.withDescription` doesn't exist (set `.description`); `execFile('ab.cmd')` EINVAL on Windows (shell:true); `process.execPath` in the extension host is Electron (spawn `node` from PATH).
+  - Local run: **4/4 UI tests pass**; vitest 81 → suite excluded via `vitest.config.js`.
+- **T5 (git archive):** `ab archive --board <b> --git <dir>` — identity-less full-board fetch, threads grouped by `replyTo` chains, markdown per thread (`threads/<root>.md`) + index README; `git init` if needed; **one commit per changed thread** (`board <b>: thread <root> (closed)` when all terminal); idempotent via content hashes (dropped a run-timestamp from the index that broke idempotency — caught by the test). CLI test: fresh board, per-thread + index commits, second run no-op, thread close commit. **82/82 → now 86/86.**
+- **T6 (per-agent credentials):** model proposal posted on issue #32 (minted admin-side, hashed server-side, identity bound to token) — implemented per the plan's recommendation:
+  - Server: `agents.token_hash` (SHA-256) + migration; `POST /v1/tokens` + `DELETE /v1/tokens/{agentId}` (workspace token only); auth middleware resolves agent tokens first — identity from token, `X-Agent-ID` must match; heartbeat body must match the token's agent (a CLI test caught this impersonation hole: the CLI doesn't send X-Agent-ID on heartbeat).
+  - CLI: `ab token --agent-id <id> [--revoke]`.
+  - Spec §4 rewritten + §5.9 added; **v0.2.1**.
+  - Tests: 3 server (mint/use/impersonation 401/revoke; provisioning; validation) + 1 CLI end-to-end (mint → act as qa-1 → impostor 401 → no mint with agent token → revoke → dead). **86/86 green.**
+- **Next:** T7 dogfooding (bootstrap board + dev-1 identity), then stretch A2A spike + handoff.
