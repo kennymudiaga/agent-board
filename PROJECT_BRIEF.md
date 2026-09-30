@@ -86,15 +86,15 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 ## 7. Current Status
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
-- **Sprint 1 (next):** protocol spec v0.1, reference server, `ab` CLI, OpenCode integration, demo: producer ↔ QA loop with zero human paste.
+- **Sprint 1 (implementation complete — PR #7 open, awaiting merge):** protocol spec v0.1 frozen (`docs/spec.md`); reference server (TypeScript + Hono + better-sqlite3 + Docker, long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI (init/join/heartbeat/send/read/ack, `--json`); OpenCode integration (`.opencode/agent/board.md` + `docs/opencode/quickstart.md`); CI (build + vitest on PR); read-only dashboard (static HTML + SSE, stretch done). 26 tests green; demo (Producer ↔ QA, zero paste) executed against the Dockerized server.
 
 ## 8. Roadmap
 
-| Sprint | Scope |
-|---|---|
-| 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI |
-| 2 | More clients (VS Code, OpenDevin) · threads & deadlines · git archive · SSE dashboard |
-| 3 | Federation (board-to-board relay) · optional A2A bridge · encryption |
+| Sprint | Scope | Status |
+|---|---|---|
+| 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Implemented — PR #7 open** |
+| 2 | More clients (VS Code, OpenDevin) · threads & deadlines · git archive · SSE dashboard | Planned |
+| 3 | Federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
 
 ## 9. Team & Workflow
 

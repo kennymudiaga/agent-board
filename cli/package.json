@@ -1,0 +1,20 @@
+{
+  "name": "@agentboard/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ab - AgentBoard CLI client (heartbeat, send, read, ack)",
+  "bin": {
+    "ab": "./bin/ab.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}
