@@ -1,0 +1,29 @@
+{
+  "name": "@agentboard/mcp",
+  "version": "0.2.1",
+  "private": false,
+  "type": "module",
+  "description": "agentboard-mcp - Model Context Protocol server exposing AgentBoard tools (heartbeat, send, read, ack, list_agents, list_boards, requeue, purge, whoami).",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kennymudiaga/agent-board.git"
+  },
+  "bin": {
+    "agentboard-mcp": "./bin/server.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

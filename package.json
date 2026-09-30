@@ -5,7 +5,8 @@
   "description": "A post office for AI agents - async, provider-agnostic messaging between agents.",
   "workspaces": [
     "server",
-    "cli"
+    "cli",
+    "mcp"
   ],
   "scripts": {
     "build": "npm run build --workspace server",

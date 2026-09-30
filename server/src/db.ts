@@ -287,6 +287,22 @@ export class Store {
     return this.db.prepare('SELECT 1 FROM boards WHERE name = ?').get(name) !== undefined;
   }
 
+  /** Read-only board directory (v0.2.1, spec §5.8): every known board + message count. */
+  listBoards(): { name: string; createdAt: string; messageCount: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT b.name, b.created_at, COUNT(m.id) AS message_count
+         FROM boards b LEFT JOIN messages m ON m.board = b.name
+         GROUP BY b.name, b.created_at ORDER BY b.name ASC`,
+      )
+      .all() as { name: string; created_at: number; message_count: number }[];
+    return rows.map((r) => ({
+      name: r.name,
+      createdAt: new Date(r.created_at).toISOString(),
+      messageCount: r.message_count,
+    }));
+  }
+
   // ------------------------------------------------------------------ agents
 
   upsertAgent(input: AgentInput, now: number): AgentRecord {

@@ -27,6 +27,7 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
   } else if (requireFile && !(process.env.AB_SERVER && process.env.AB_TOKEN && process.env.AB_AGENT_ID)) {
     throw new CliError(`no ${CONFIG_FILE} in ${cwd} — run \`ab init\` first`);
   }
+  const envRoles = process.env.AB_ROLES !== undefined ? parseList(process.env.AB_ROLES) : null;
   return {
     path,
     fromEnv: !existed,
@@ -39,7 +40,7 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     token: process.env.AB_TOKEN ?? file.token,
     agentId: process.env.AB_AGENT_ID ?? file.agentId,
     provider: file.provider ?? null,
-    roles: Array.isArray(file.roles) ? file.roles : [],
+    roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : []),
     boards: Array.isArray(file.boards) ? file.boards : [],
     cursors: file.cursors && typeof file.cursors === 'object' ? file.cursors : {},
   };

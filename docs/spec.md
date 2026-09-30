@@ -278,6 +278,19 @@ Response `200` — `{ "ok": true, "deleted": "<id>" }`.
 
 Errors: `403` purge by a non-sender · `404` unknown message.
 
+### 5.8 `GET /v1/boards` — board directory (v0.2.1, read-only)
+
+Every known board with its message count. Identity-less (same read-only GET
+rules as §4) — used by `list_boards` (MCP), dashboards, and archives.
+
+Response `200`:
+
+```json
+{ "boards": [ { "name": "sprint-7", "createdAt": "2026-09-30T10:15:30.123Z", "messageCount": 42 } ] }
+```
+
+Errors: `401` bad token.
+
 ## 6. Delivery semantics
 
 ### 6.1 Lifecycle

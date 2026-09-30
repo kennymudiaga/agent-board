@@ -221,6 +221,10 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     });
   });
 
+  // --- GET /v1/boards (v0.2.1, spec §5.8): read-only board directory --------
+
+  app.get('/v1/boards', (c) => c.json({ boards: store.listBoards() }, 200));
+
   // --- GET /v1/agents -------------------------------------------------------
 
   app.get('/v1/agents', (c) => {
