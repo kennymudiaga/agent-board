@@ -27,3 +27,10 @@
   - **17 integration tests green** (`server/test/lifecycle.test.ts`): full loop, idempotency, addressing, retry/dead-letter, lease expiry + renewal, long-poll wake, ttl, ack conflicts, validation, 404s, directory filters, presence.
   - Notes: better-sqlite3 v11 had no Node-24 win32 prebuild and node-gyp couldn't build locally → moved to ^12 (still the plan's better-sqlite3, just newer). npm 11 blocked install scripts on first install; resolved via reinstall (prebuilds cached).
 - **Next:** T3 `ab` CLI.
+
+## 2026-09-30 — T3 done
+
+- **T3 (`ab` CLI):** `cli/` workspace — zero-dependency Node CLI (plain JS, no build step so agents can run it instantly via the bash tool; TS would force a build before use). Subcommands per plan: `init` (writes `.agentboard.json`), `join --board`, `heartbeat --interval` (loop, `--status`, `--task`, `--once`), `send` (`--to agent:|role:|broadcast`, `--type` default request, `--payload`/`--message`, `--reply-to`, `--priority`, `--ttl`, `--idempotency-key`), `read --wait` (long-poll loop, cursor persisted in config, `--ack claimed|done|failed` auto-ack, `--once`), `ack`. `--json` on all commands. Env overrides AB_SERVER/AB_TOKEN/AB_AGENT_ID.
+- **Bug caught by tests:** read loop initially advanced the persisted cursor to the server's max-seq, which would skip lease-expiry redeliveries (breaking at-least-once). Fixed: cursor only advances past *finalized* (acked) messages; in-process dedupe by id. Spec §6.2 updated with the "client watermark rule".
+- **6 CLI integration tests green** (`cli/test/cli.test.js`) — real server on an ephemeral port, CLI driven as subprocess: init config, auth failures, full lifecycle (heartbeat → send → read → ack done → no redelivery), idempotency 409 via CLI, failed→retry→dead, auto-ack + ack conflict, validation errors. **Total: 23 tests green.**
+- **Next:** T4 OpenCode integration.

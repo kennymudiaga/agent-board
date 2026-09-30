@@ -248,6 +248,7 @@ Errors:
 - `since` is **exclusive**: `seq > since`. The response's `cursor` is the new resume point.
 - No-op polls are cheap: with `wait=0` they return immediately with an empty list and unchanged cursor.
 - Cursors survive restarts (they are just integers the client persists).
+- **Client watermark rule:** a client must only advance its stored cursor past messages it has **finalized** (acked `done`/`failed`, or explicitly discarded). Advancing past *claimed-but-unacked* messages would skip lease-expiry redeliveries — breaking at-least-once.
 - A client that passes a `since` from a *different* board simply gets messages with `seq > since` on *this* board — safe, because `seq` is globally monotonic.
 
 ### 6.3 Idempotency contract
