@@ -348,6 +348,25 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('existing config keeps its stored token even when AB_TOKEN is set (regression #26)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // Deliberate config: init stores a token (explicit flag wins over env).
+      const init = await runCli(['init', '--agent-id', 'file-agent', '--token', 'stored-token-123'], { cwd: dir });
+      expect(init.code).toBe(0, init.stderr);
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8')).token).toBe('stored-token-123');
+
+      // Run commands while AB_TOKEN is present in the environment (the harness
+      // always sets it) — the stored token must survive.
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(read.code).toBe(0, read.stderr);
+      const after = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(after.token).toBe('stored-token-123'); // not erased, env token not written
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('dead/requeue/purge manage the dead-letter queue (T7)', async () => {
     const dir = makeWorkspace();
     try {

@@ -97,3 +97,12 @@ QA sign-off (`docs/qa/sprint-2-signoff.md`) blocked PR #20 on **#21 (major)** �
 - Also fixed the misleading `data.watermark ?? cursor` fallback comment (QA non-blocking observation).
 - **Suite: 68/68 green** (was 63). Build clean.
 - **Next:** re-run CI on the updated branch, re-submit for QA sign-off.
+
+## 2026-09-30 — QA re-review: PASS + non-blocking #26 fixed
+
+- QA re-review (`docs/qa/sprint-2-signoff.md` final): **✅ PASS** — all five repros verified live, #21 verified with a real server kill/restart. One non-blocking open item filed as **#26**.
+- **#26 (minor):** my #25 `tokenFromEnv` guard was broader than intended — with `AB_TOKEN` present in the environment, `saveConfig` *erased* a deliberately-stored token from an existing `.agentboard.json`.
+- **Fix:** `loadConfig` now tracks `fileToken` (the raw stored token). `saveConfig` persists `fileToken ?? (tokenFromEnv ? undefined : token)` — a stored token is **never erased** (even when env is set; the env token itself is still never written), and env-only runs still write nothing. Both invariants hold:
+  - #25: env-only → no token on disk.
+  - #26: existing config + AB_TOKEN set → stored token survives.
+- Regression test for #26 added (init with `--token`, read while AB_TOKEN set → token preserved); live repro of QA's exact steps passes. **Suite: 69/69 green.**

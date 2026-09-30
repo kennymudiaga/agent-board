@@ -2,10 +2,11 @@
 
 > QA review of `docs/sprint-2` implementation (branch `feature/sprint-2`, PR #20).
 > Reviewer: QA Engineer (Ivy) · Date: 2026-09-30 · Scope: T1–T7 (spec v0.2.0)
+> **Re-review: 2026-09-30 (fix commit `9d17433`) — see §8.**
 
-## Verdict
+## Verdict (final, after remediation)
 
-**❌ BLOCKED (one major)** — the core protocol work (T1 watermark, T2 fan-out, T3 deadlines, T7 dead-letter) is verified solid and the sprint demo scenarios all pass live. One major defect in the T4 VS Code extension (#21) blocks sign-off per sprint-1 precedent (major bug in a shipped feature). The fix is small and well-scoped; all other findings are minor.
+**✅ PASS** — all five filed bugs (#21–#25) are fixed, regression-tested, and re-verified live. PR #20 is cleared for merge. One minor follow-up regression (#26) was found in the #25 fix and filed; it does not block.
 
 ---
 
@@ -13,65 +14,62 @@
 
 | Suite | Tests | Passed | Failed | Notes |
 |---|---|---|---|---|
-| `server/test/lifecycle.test.ts` | 42 | 42 | 0 | incl. watermark suite (4), fan-out suite (9), deadline suite (6), dead-letter suite (4) |
+| `server/test/lifecycle.test.ts` | 45 | 45 | 0 | incl. regressions for #22 (done-wins), #23 (409 requeue), #24 (strict ISO) |
 | `server/test/dashboard.test.ts` | 5 | 5 | 0 | |
-| `vscode-ext/test/board.test.js` | 4 | 4 | 0 | fetchBoardState, watchBoard, formatters |
-| `cli/test/cli.test.js` | 12 | 12 | 0 | incl. fan-out E2E, deadline E2E, dead/requeue/purge E2E, #12 watermark crash regression |
-| **Total** | **63** | **63** | **0** | |
+| `vscode-ext/test/board.test.js` | 5 | 5 | 0 | incl. #21 reconnect regression (flaky SSE endpoint) |
+| `cli/test/cli.test.js` | 13 | 13 | 0 | incl. #24 CLI validation, #25 env-token regression |
+| **Total** | **68** | **68** | **0** | (was 63; 5 new regression tests) |
 
 - `npm run build` (tsc, strict): clean.
-- CI on sprint-2 head `284ffc0`: **both jobs green** — `build-and-test` + the new `docker` job (T6).
-- `ab --version` → `ab 0.2.0` (T5). npm pack/install path verified by dev team.
+- CI on fix commit `9d17433`: **both jobs green** (`build-and-test` + `docker`).
 
-## 2. Manual verification (live server, fresh DB)
+## 2. Manual re-verification (live server, fresh DB)
 
-All sprint-2 core scenarios reproduced live and passed:
+All five original repros re-run and passing:
 
-- **Fan-out (T2):** broadcast → 3 deliveries (producer/qa/reviewer); each reader picked up **its own copy** (`delivery.state=claimed, attempts=1`); qa-1 failed 3× to `dead` while reviewer-1's copy stayed claimed — per-reader independence confirmed; observability shows per-reader delivery detail; zero-member broadcast → immediate `dead`; late joiner gets nothing.
-- **Watermark crash test (T1, #12):** qa-1 claimed msg (watermark blocked at seq−1), "crashed"; newer message arrived and was finalized by reviewer-1; lease expired; qa-1 restart → **redelivery received, attempts=2**. The exact #12 scenario passes.
-- **Deadlines (T3):** past-deadline question expires and is never delivered; response to expired question accepted with `late: true`; deadline on non-question → 422.
-- **Dead-letter (T7):** 3 fails → dead → non-sender requeue **403** → sender requeue → pending (attempts=0) → redelivered (attempts=1) → non-sender purge **403** → sender purge ok.
-- **Sprint-1 regressions:** identity-less GETs still work and never claim; `ttl: 0` still normalized to no-expiry; `ab join` still validates board names.
+- **#21 (major):** watcher connected → server process killed → restarted on the same port → watcher **reconnected** (`connect` event) → post-restart broadcast delivered (`message` event). Full SSE recovery confirmed live, not just via the flaky-endpoint unit test.
+- **#22:** broadcast `ttl:60`, one reader `done` before expiry → after sweep `state: "done"` with deliveries `{qa-1:done, reviewer-1:expired}` — "any done wins" holds.
+- **#23:** zero-member broadcast requeue → **409 `state_conflict`** (honest), message still `dead`; spec §5.7 updated.
+- **#24:** `"March 5, 2025"` → 422, timezone-less → 422, `...Z` / `...+02:00` → 201. Server + CLI both strict; spec §3.1 clarified.
+- **#25:** env-only `read` → config contains cursors only (no token, no server). ✅
 
-## 3. Bugs filed (all reproduced or code-confirmed)
+## 3. Bugs filed across both review rounds
 
 | Issue | Severity | Summary | Status |
 |---|---|---|---|
-| [#21](https://github.com/kennymudiaga/agent-board/issues/21) | **major** | VS Code board panel goes permanently stale when the SSE stream drops — no reconnect, no poll fallback (comment claims a fallback that doesn't exist); zombie heartbeat timer after panel close | open |
-| [#22](https://github.com/kennymudiaga/agent-board/issues/22) | minor | Broadcast aggregate wrong after TTL expiry: `expired` overrides a completed `done` delivery — violates spec §6.1 "any done wins" (verified live) | open |
-| [#23](https://github.com/kennymudiaga/agent-board/issues/23) | minor | Requeue of a zero-member broadcast returns 200 but stays dead — silent no-op vs spec §5.7 (verified live) | open |
-| [#24](https://github.com/kennymudiaga/agent-board/issues/24) | minor | `deadline` validation accepts non-ISO strings; timezone-less deadlines parsed in server-local time, not UTC (verified live) | open |
-| [#25](https://github.com/kennymudiaga/agent-board/issues/25) | minor | Env-only identity: `ab read`/`ab join` write `.agentboard.json` with the **plaintext token** to disk, defeating the env-only design (verified live) | open |
+| [#21](https://github.com/kennymudiaga/agent-board/issues/21) | major | VS Code panel stale on SSE drop (no reconnect) | ✅ verified fixed |
+| [#22](https://github.com/kennymudiaga/agent-board/issues/22) | minor | Broadcast aggregate: expired overrides done on TTL expiry | ✅ verified fixed |
+| [#23](https://github.com/kennymudiaga/agent-board/issues/23) | minor | Zero-member requeue silent no-op | ✅ verified fixed |
+| [#24](https://github.com/kennymudiaga/agent-board/issues/24) | minor | Lax deadline validation (non-ISO, local-time parsing) | ✅ verified fixed |
+| [#25](https://github.com/kennymudiaga/agent-board/issues/25) | minor | Env-only identity writes plaintext token to disk | ✅ verified fixed (reported case) |
+| [#26](https://github.com/kennymudiaga/agent-board/issues/26) | minor | **New regression from #25 fix:** `AB_TOKEN` set in env silently erases a stored token from an existing config | open — non-blocking |
 
 ## 4. What passed review (no issues found)
 
-- T1 server watermark design (server-computed, not client heuristic) — correct and authoritative; the plan's client-side design note was rightly rejected (it cannot see crashed-run claims).
-- T2 fan-out implementation — deliveries table, aggregate transitions, per-reader leases/retries, watermark interplay with deliveries — all consistent with spec §6.1/§6.2.
-- T3 deadline/late semantics, T7 sender-gating (403/409 codes), SSE stream, spec v0.2.0 amendments — consistent with implementation.
-- CI/release workflows (T5/T6): correct; Docker job green on CI.
+- #21 fix: reconnect backoff (1s→2s→…cap 30s, reset on connect), `close()` aborts in-flight stream + clears retry timer, heartbeat timer cleared on panel dispose — correct.
+- #22 fix: sweep recomputes aggregates for all broadcasts (not just pending/claimed) — correct.
+- #23 fix: zero-delivery broadcast → `wrongState` → 409; spec §5.7 documents it.
+- #24 fix: `isValidIso8601Utc` regex + `Date.parse` — rejects natural language and timezone-less strings; accepts `Z`/`±hh:mm` (1–3 fractional digits).
+- #25 fix: `fromEnv`/`tokenFromEnv` tracking; pure-env runs persist cursors only.
+- All core protocol work from the first review round (watermark, fan-out, deadlines, dead-letter) — unchanged, still verified.
 
-## 5. Claim vs. reality check
+## 5. Claim vs. reality check (remediation round)
 
 | Claim | Reality |
 |---|---|
-| "63 tests green" | ✅ confirmed |
+| "68/68 green" | ✅ confirmed |
 | "Build clean" | ✅ confirmed |
-| "CI incl. Docker job green" | ✅ confirmed |
-| "Broadcast reaches two readers independently" | ✅ confirmed live |
-| "Crash test: redelivery after lease expiry (attempts=2)" | ✅ confirmed live |
-| "Deadline question expires; late responses flagged" | ✅ confirmed live |
-| "VS Code extension: live via SSE" | ⚠️ works while the stream is healthy; **goes permanently stale on any SSE drop** (#21) |
-| "Demo executed (panel leg simulated via CLI)" | ⚠️ honest caveat in progress.md — extension host wiring not demo-verified (that's where #21 lives) |
+| "CI re-run pending" | ✅ confirmed green on `9d17433` |
+| "#21 reconnect regression test" | ✅ confirmed + **verified live with real server kill/restart** |
+| "#22/#23/#24/#25 regression tests" | ✅ all confirmed live |
 
-## 6. Blockers & recommendation
+## 6. Open item (non-blocking)
 
-- **Blocker (#21):** add SSE reconnect (backoff loop) or a poll fallback to `watchBoard`; clear the heartbeat timer on panel dispose. One file, ~15 lines, plus a reconnect unit test.
-- **Recommended same-pass fixes:** #22 (recompute aggregates after expiry sweep), #23 (honest 409 or documented no-op), #24 (strict ISO-8601-UTC validation), #25 (don't persist env-provided tokens).
-- **Non-blocking observations (not filed):** CLI `data.watermark ?? cursor` fallback does not fall back to `data.cursor` as the comment claims (v0.1-server compat only — functionally safe, never advances); broadcast ttl sweep vs "done wins" (#22) is the only aggregate inconsistency found.
+- **#26:** `saveConfig` drops a *stored* file token whenever `AB_TOKEN` is present in the environment (the #25 guard is broader than intended). Recoverable via `ab init`; recommend fixing in the next pass with a test for "existing config + env var set". Not a merge blocker.
 
-## 7. Sign-off
+## 7. Sign-off (final)
 
-- Automated tests: 63/63 pass.
-- Manual playthrough: all core sprint-2 scenarios verified live; 5 bugs filed (1 major, 4 minor).
-- Blocker status: **BLOCKED on #21** (VS Code extension SSE liveness).
-- Sign-off: ❌ **BLOCKED** — core protocol clears; extension fix + re-verify #21, then PASS.
+- Automated tests: **68/68 pass** (5 new regression tests).
+- Manual playthrough: all five original repros pass; #21 verified with a real kill/restart cycle.
+- Blocker status: **none**.
+- Sign-off: ✅ **PASS** — PR #20 clear to merge. Producer: triage #26 (minor) for the next pass.
