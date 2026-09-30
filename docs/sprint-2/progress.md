@@ -69,3 +69,15 @@
   - Caught in testing: a broadcast's sender is a member too, so "all deliveries dead" includes the sender's copy — the aggregate test now kills it explicitly (documented behavior, not a bug).
   - Tests: 4 server + 1 CLI end-to-end (fail→dead→list→requeue→redeliver→purge, non-sender denied). **63/63 green.**
 - **Next:** final verification (build, suite, docker, sprint-2 demo end-to-end), handoff, PR.
+
+## 2026-09-30 — Final verification + handoff
+
+- Build clean, **63/63 tests green**, Docker image builds.
+- **Sprint-2 acceptance demo executed** against a fresh containerized server:
+  - 3 agents joined `sprint-8` (producer-1, qa-1, reviewer-1 — reviewer standing in for the VS Code extension, which shares the same CLI/API backend).
+  - **Fan-out (step 5):** producer broadcast note → deliveries created for qa-1 AND reviewer-1; both long-poll loops received their own copy.
+  - **Deadline (step 6):** question with 2-min deadline to `role:qa` → qa-1 picked it up and answered before expiry (`late: false`).
+  - **Crash test (step 7):** qa-1 claimed a request (cursor watermark stayed behind), process killed; reviewer-1 finalized a later message; lease expired (patched in-container); qa-1 restarted and **received the redelivered request** (attempts 2), acked done. No paste between steps.
+  - Demo caveat: the VS Code *panel* leg was simulated with the CLI (identical backend); the extension's own logic is covered by its 4 unit tests.
+- Handoff written: `docs/sprint-2/done.md`, README + PROJECT_BRIEF §7/§8 updated.
+- **Next:** push, PR referencing issues #12–#19.
