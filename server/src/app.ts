@@ -52,6 +52,17 @@ function isStringList(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string' && x.length <= 64);
 }
 
+/**
+ * Strict ISO 8601 with an explicit timezone (spec §3.1: "ISO 8601 UTC,
+ * server-validated"). Natural-language dates and timezone-less strings are
+ * rejected — the latter would parse in server-local time, violating the
+ * "server timestamps only" contract.
+ */
+const ISO_8601_TZ_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+export function isValidIso8601Utc(v: unknown): v is string {
+  return typeof v === 'string' && ISO_8601_TZ_RE.test(v) && !Number.isNaN(Date.parse(v));
+}
+
 function parseTo(raw: unknown): { kind: 'agent' | 'role' | 'broadcast'; value: string | null } | undefined {
   if (typeof raw !== 'string') return undefined;
   if (raw === 'broadcast') return { kind: 'broadcast', value: null };
@@ -260,6 +271,17 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       // Spec §3.1: ttl 0 means no expiry — normalize to NULL.
       ttl = (body.ttl as number) === 0 ? null : (body.ttl as number);
     }
+    // v0.2: questions may carry a deadline (strict ISO 8601 with timezone).
+    let deadline: number | null = null;
+    if (body.deadline !== undefined) {
+      if (!isValidIso8601Utc(body.deadline)) {
+        return error(c, 422, 'unprocessable', 'deadline must be ISO 8601 with an explicit timezone (e.g. 2026-09-30T12:00:00Z)');
+      }
+      if (type !== 'question') {
+        return error(c, 422, 'unprocessable', 'deadline is only valid for type=question');
+      }
+      deadline = Date.parse(body.deadline as string);
+    }
     let idempotencyKey: string | null = null;
     if (body.idempotencyKey !== undefined) {
       if (typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 1 || body.idempotencyKey.length > 128) {
@@ -286,6 +308,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         payload: body.payload,
         priority: priority as Priority,
         ttl,
+        deadline,
         idempotencyKey,
         replyTo,
       },
@@ -367,7 +390,11 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       messages = store.claimMessages(board, forId, since, Date.now());
     }
     const cursor = messages.length ? messages[messages.length - 1].seq : since;
-    return c.json({ messages, cursor }, 200);
+    // True watermark (spec §6.2, v0.2): where the client may safely resume.
+    // Server-computed so a crashed run's claimed-but-unacked messages still
+    // block it (fixes #12 — clients must resume from `watermark`, not `cursor`).
+    const watermark = store.readerWatermark(board, forId, since, Date.now());
+    return c.json({ messages, cursor, watermark }, 200);
   });
 
   // --- POST /v1/messages/:id/ack --------------------------------------------
@@ -405,6 +432,28 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     }
     mailbox.emit('updated', result.message.board);
     return c.json({ message: result.message }, 200);
+  });
+
+  // --- POST /v1/messages/:id/requeue + DELETE (dead-letter mgmt, §5.7) ------
+
+  app.post('/v1/messages/:id/requeue', async (c) => {
+    const id = c.req.param('id');
+    if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
+    const result = store.requeueMessage(id, c.get('agentId'), Date.now());
+    if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
+    if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can requeue a message');
+    if ('wrongState' in result) return error(c, 409, 'state_conflict', 'only dead messages can be requeued');
+    mailbox.emit('updated', result.message.board);
+    return c.json({ message: result.message }, 200);
+  });
+
+  app.delete('/v1/messages/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
+    const result = store.deleteMessage(id, c.get('agentId'));
+    if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
+    if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can purge a message');
+    return c.json({ ok: true, deleted: id }, 200);
   });
 
   return app;

@@ -226,7 +226,7 @@ describe('ab CLI against the reference server', () => {
 
       // Watermark must NOT have advanced past the message.
       const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
-      expect(cfg.cursors['sprint-7']).toBe(0);
+      expect(cfg.cursors['sprint-7']).toBe(msg.seq - 1);
 
       // Simulate the crash window: lease expires server-side.
       store.db
@@ -241,6 +241,220 @@ describe('ab CLI against the reference server', () => {
 
       // Attempt count proves the redelivery was claimed anew.
       const row = store.db.prepare('SELECT attempts FROM messages WHERE id = ?').get(msg.id);
+      expect(row.attempts).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('broadcast fan-out: two agents each receive and finalize their own copy (T2)', async () => {
+    const aDir = makeWorkspace();
+    const bDir = makeWorkspace();
+    try {
+      for (const [dir, agentId, roles] of [[aDir, 'cli-agent', 'qa,dev'], [bDir, 'qa-1', 'qa']]) {
+        await runCli(['init', '--agent-id', agentId, '--roles', roles], { cwd: dir });
+        await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+        await runCli(['heartbeat', '--once'], { cwd: dir });
+      }
+
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'broadcast', '--type', 'note', '--message', 'standup: statuses please', '--json'], { cwd: aDir });
+      expect(sent.code).toBe(0, sent.stderr);
+      const msg = JSON.parse(sent.stdout);
+      expect(msg.deliveries.map((d) => d.readerId).sort()).toEqual(['cli-agent', 'qa-1']);
+
+      // Both readers see the broadcast and ack their own copies.
+      for (const dir of [aDir, bDir]) {
+        const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'done'], { cwd: dir });
+        expect(read.code).toBe(0, read.stderr);
+        expect(read.stdout).toContain(msg.id);
+        expect(read.stdout).toContain('[ack]');
+      }
+
+      // Both deliveries terminal -> aggregate done.
+      const view = await (
+        await fetch(`${baseUrl}/v1/boards/sprint-7/messages?status=done`, {
+          headers: { authorization: `Bearer ${TOKEN}`, 'x-agent-id': 'qa-1' },
+        })
+      ).json();
+      expect(view.messages.some((m) => m.id === msg.id)).toBe(true);
+    } finally {
+      rmSync(aDir, { recursive: true, force: true });
+      rmSync(bDir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends questions with deadlines (T3)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+      const deadline = new Date(Date.now() + 120_000).toISOString();
+      const sent = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'question', '--message', 'ship today?', '--deadline', deadline, '--json'],
+        { cwd: dir },
+      );
+      expect(sent.code).toBe(0, sent.stderr);
+      const msg = JSON.parse(sent.stdout);
+      expect(msg.type).toBe('question');
+      expect(msg.deadline).toBe(deadline);
+      expect(msg.late).toBe(false);
+
+      // deadline on a non-question is rejected by the server.
+      const bad = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'note', '--message', 'nope', '--deadline', deadline],
+        { cwd: dir },
+      );
+      expect(bad.code).not.toBe(0);
+      expect(bad.stderr).toContain('question');
+
+      // Non-ISO / timezone-less deadlines are rejected client-side too (#24).
+      const lax = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'question', '--message', 'x', '--deadline', 'March 5, 2025'],
+        { cwd: dir },
+      );
+      expect(lax.code).not.toBe(0);
+      expect(lax.stderr).toContain('timezone');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('env-only identity never persists the token to disk (regression #25)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // No `ab init` — identity comes purely from env (the extension's flow).
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(read.code).toBe(0, read.stderr);
+
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.token).toBeUndefined(); // never written to disk
+      expect(cfg.server).toBeUndefined();
+      expect(typeof cfg.cursors).toBe('object'); // cursors still persist
+
+      // A second env-only run (file now exists) still must not leak the token.
+      const again = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(again.code).toBe(0, again.stderr);
+      const cfg2 = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg2.token).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('existing config keeps its stored token even when AB_TOKEN is set (regression #26)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // Deliberate config: init stores a token (explicit flag wins over env).
+      const init = await runCli(['init', '--agent-id', 'file-agent', '--token', 'stored-token-123'], { cwd: dir });
+      expect(init.code).toBe(0, init.stderr);
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8')).token).toBe('stored-token-123');
+
+      // Run commands while AB_TOKEN is present in the environment (the harness
+      // always sets it) — the stored token must survive.
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(read.code).toBe(0, read.stderr);
+      const after = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(after.token).toBe('stored-token-123'); // not erased, env token not written
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('dead/requeue/purge manage the dead-letter queue (T7)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'flaky', '--json'], { cwd: dir });
+      const msg = JSON.parse(sent.stdout);
+
+      // Fail to dead (3 failed acks).
+      for (let i = 1; i <= 3; i++) {
+        await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+        await runCli(['ack', '--id', msg.id, '--status', 'failed', '--error', `boom ${i}`], { cwd: dir });
+      }
+
+      const dead = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
+      expect(dead.code).toBe(0, dead.stderr);
+      expect(dead.stdout).toContain(msg.id);
+
+      // Requeue (sender) -> redeliverable.
+      const requeued = await runCli(['requeue', '--id', msg.id], { cwd: dir });
+      expect(requeued.code).toBe(0, requeued.stderr);
+      expect(requeued.stdout).toContain('pending');
+      const mail = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(mail.stdout).toContain(msg.id);
+
+      // A non-sender cannot purge.
+      const other = makeWorkspace();
+      try {
+        await runCli(['init', '--agent-id', 'other-1'], { cwd: other });
+        const denied = await runCli(['purge', '--id', msg.id], { cwd: other });
+        expect(denied.code).not.toBe(0);
+        expect(denied.stderr).toContain('sender');
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+
+      // Sender purges; message is gone.
+      const purged = await runCli(['purge', '--id', msg.id], { cwd: dir });
+      expect(purged.code).toBe(0, purged.stderr);
+      const deadAgain = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
+      expect(deadAgain.stdout).not.toContain(msg.id);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+
+      // msg_5 arrives first; msg_6 arrives AFTER msg_5 is claimed (the #12 shape).
+      const five = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'five', '--json'], { cwd: dir });
+      const msg5 = JSON.parse(five.stdout);
+
+      // Run 1: claim msg_5 with --ack claimed, then "crash" (process exits).
+      const claim = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'claimed'], { cwd: dir });
+      expect(claim.code).toBe(0, claim.stderr);
+      expect(claim.stdout).toContain(msg5.id);
+
+      // msg_6 arrives while msg_5 is still claimed (invisible to pickup).
+      const six = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'six', '--json'], { cwd: dir });
+      const msg6 = JSON.parse(six.stdout);
+
+      // Run 2 (restart): finalize msg_6 with --ack done. The watermark MUST NOT
+      // jump past msg_5.
+      const finalize = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'done'], { cwd: dir });
+      expect(finalize.code).toBe(0, finalize.stderr);
+      expect(finalize.stdout).toContain(msg6.id);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      // The watermark must NOT have passed msg_5 (earlier tests may leave other
+      // claimed-but-unfinalized messages that block it even earlier — the
+      // property that matters is: strictly below msg_5's seq).
+      expect(cfg.cursors['sprint-7']).toBeLessThan(msg5.seq);
+
+      // Crash window: msg_5's lease expires server-side.
+      store.db
+        .prepare('UPDATE messages SET lease_expires_at = ? WHERE id = ?')
+        .run(Date.now() - 1, msg5.id);
+
+      // Run 3: redelivery of msg_5 must arrive (attempts=2).
+      const redelivered = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(redelivered.code).toBe(0, redelivered.stderr);
+      expect(redelivered.stdout).toContain(msg5.id);
+      const row = store.db.prepare('SELECT attempts FROM messages WHERE id = ?').get(msg5.id);
       expect(row.attempts).toBe(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });

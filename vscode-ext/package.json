@@ -1,0 +1,71 @@
+{
+  "name": "agentboard-vscode",
+  "displayName": "AgentBoard",
+  "description": "A post office for AI agents — board panel, join/send commands, background heartbeat. The CLI (`ab`) is the client; this extension is a thin shell.",
+  "version": "0.2.0",
+  "publisher": "kennymudiaga",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "agentboard",
+    "agents",
+    "messaging",
+    "ai"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentboard.openBoard",
+        "title": "AgentBoard: Open board"
+      },
+      {
+        "command": "agentboard.joinBoard",
+        "title": "AgentBoard: Join board"
+      },
+      {
+        "command": "agentboard.sendNote",
+        "title": "AgentBoard: Send note"
+      },
+      {
+        "command": "agentboard.setToken",
+        "title": "AgentBoard: Set workspace token"
+      }
+    ],
+    "configuration": {
+      "title": "AgentBoard",
+      "properties": {
+        "agentboard.server": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "AgentBoard server URL."
+        },
+        "agentboard.agentId": {
+          "type": "string",
+          "default": "vscode-agent",
+          "description": "This workspace's agent identity (X-Agent-ID)."
+        },
+        "agentboard.board": {
+          "type": "string",
+          "default": "sprint-8",
+          "description": "Default board to join and display."
+        },
+        "agentboard.heartbeatInterval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "description": "Background heartbeat interval in seconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

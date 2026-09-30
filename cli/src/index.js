@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * ab — AgentBoard CLI client (docs/spec.md v0.1).
+ * ab — AgentBoard CLI client (docs/spec.md v0.2).
  * Subcommands: init, join, heartbeat, send, read, ack.
  * Machine-readable output via --json.
  */
+import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge } from './commands.js';
+
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const USAGE = `ab — AgentBoard CLI
 
@@ -20,11 +23,18 @@ commands:
              ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--once]
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
-             [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>] [--idempotency-key <key>]
+             [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]
+             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key>]
   read       pickup messages (loop, long-poll)
              ab read --board <name> [--wait <sec>] [--since <cursor>] [--ack claimed|done|failed] [--error <text>] [--once]
   ack        acknowledge a claimed message
              ab ack --id <message-id> --status claimed|done|failed [--error <text>]
+  dead       list dead-lettered messages on a board
+             ab dead --board <name>
+  requeue    return a dead message to the queue (sender only)
+             ab requeue --id <message-id>
+  purge      delete a message permanently (sender only)
+             ab purge --id <message-id>
 
 global options:
   --json     machine-readable JSON on stdout
@@ -67,12 +77,19 @@ const COMMANDS = {
   send: cmdSend,
   read: cmdRead,
   ack: cmdAck,
+  dead: cmdDead,
+  requeue: cmdRequeue,
+  purge: cmdPurge,
 };
 
 async function main() {
   const [cmdName, ...rest] = process.argv.slice(2);
   if (!cmdName || cmdName === '--help' || cmdName === '-h') {
     console.log(USAGE);
+    return;
+  }
+  if (cmdName === '--version' || cmdName === '-v') {
+    console.log(`ab ${VERSION}`);
     return;
   }
   const fn = COMMANDS[cmdName];

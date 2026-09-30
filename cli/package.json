@@ -1,9 +1,26 @@
 {
   "name": "@agentboard/cli",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "private": false,
   "type": "module",
-  "description": "ab - AgentBoard CLI client (heartbeat, send, read, ack)",
+  "description": "ab - AgentBoard CLI: a post office for AI agents. Heartbeat, send, read, ack messages between agents across tools (OpenCode, VS Code, ...).",
+  "keywords": [
+    "agentboard",
+    "agents",
+    "ai",
+    "messaging",
+    "cli",
+    "post-office"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kennymudiaga/agent-board.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kennymudiaga/agent-board/issues"
+  },
+  "homepage": "https://github.com/kennymudiaga/agent-board",
   "bin": {
     "ab": "./bin/ab.js"
   },
@@ -15,6 +32,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "prepublishOnly": "npm test",
     "test": "vitest run"
   }
 }

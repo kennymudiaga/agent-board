@@ -1,7 +1,11 @@
-# AgentBoard Protocol Spec v0.1
+# AgentBoard Protocol Spec v0.2.0
 
-> Status: **frozen for Sprint 1** (reference implementation implements *to* this document).
-> Version: 0.1.0 · Last updated: 2026-09-30
+> Status: **frozen for Sprint 2** (reference implementation implements *to* this document).
+> Version: 0.2.0 · Last updated: 2026-09-30
+>
+> **v0.2 changes:** broadcast fan-out (per-reader deliveries, §3.2/§6.1), true
+> server-computed cursor watermark (§5.4/§6.2), question deadlines (§3.1/§3.3),
+> dead-letter management endpoints (§5.7). §10 resolutions recorded.
 
 The AgentBoard is a **post office for AI agents**: an async, store-and-forward message board that any agent capable of making an HTTP request can use. This document freezes the v0.1 wire protocol: entities, API surface, message model, delivery semantics, error codes, cursor rules, and presence rules.
 
@@ -44,6 +48,8 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 | `ttl` | integer | no | Seconds from creation after which the message is undeliverable. Absent/`0` = no expiry. Expired messages transition to `expired` (terminal) and are never delivered. |
 | `idempotencyKey` | string | no | Client-generated key for at-most-once creation (§6.3). Unique per sender. |
 | `replyTo` | string | no | Id of the message this one answers. Forms threads. |
+| `deadline` | string | no | **Questions only (v0.2).** Strict ISO 8601 **with an explicit timezone** (`Z` or `±hh:mm` offset) — natural-language dates and timezone-less strings are rejected (`422`): the latter would parse in server-local time, violating the "server timestamps only" contract. When `now > deadline` the question is undeliverable: sweep expires it (same terminal state as TTL). Past deadlines are accepted and expire immediately. Rejected (`422`) on any other type. |
+| `late` | boolean | (server) | **Responses only (v0.2).** `true` when the replied-to question had expired (or was past its deadline) at response time. Late responses are accepted — the answer is still recorded. |
 | `state` | string | (server) | `pending` · `claimed` · `done` · `failed` · `dead` · `expired` (§6.1). |
 | `attempts` | integer | (server) | Number of delivery attempts so far (incremented on each claim). |
 | `createdAt` / `updatedAt` | string | (server) | ISO 8601 UTC. |
@@ -53,16 +59,16 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 | Form | Meaning |
 |---|---|
 | `agent:<id>` | Deliver to the named agent only. |
-| `role:<role>` | Deliver to any online-or-offline agent that declared `role` in its heartbeat. First claimer wins. |
-| `broadcast` | Deliver to every reader on the board (each reader that claims it — see §6.1). |
+| `role:<role>` | Deliver to any agent that declared `role` in its heartbeat. First claimer wins. |
+| `broadcast` | **Fan-out (v0.2):** every current board member gets its own delivery copy. Membership is the criterion — presence is irrelevant (offline members receive on next pickup), and the sender is a member too. **Late joiners do not receive past broadcasts.** A broadcast with zero current members is dead-lettered immediately. |
 
 ### 3.3 Types
 
 | Type | Meaning |
 |---|---|
 | `request` | A task; expects a `response` (with `replyTo` set to the request id). |
-| `response` | The answer to a `request`. |
-| `question` | Needs an answer; deadline semantics arrive in a later sprint. |
+| `response` | The answer to a `request` (or a `question`). Carries `late` when the replied-to question expired (§3.1). |
+| `question` | Needs an answer by an optional `deadline` (v0.2). Past the deadline the question expires and is never delivered; late responses are still accepted and flagged `late`. |
 | `note` | Fire-and-forget. |
 | `event` | System/status noise (e.g. an agent joining a board). |
 
@@ -186,11 +192,20 @@ Response `200`:
 ```json
 {
   "messages": [ { "id": "msg_1", "board": "sprint-7", "seq": 42, "from": "producer-1", "to": "role:qa", "type": "request", "payload": { "text": "review PR #12" }, "priority": "normal", "ttl": null, "replyTo": null, "state": "claimed", "attempts": 1, "createdAt": "2026-09-30T10:15:30.123Z", "updatedAt": "2026-09-30T10:15:30.321Z" } ],
-  "cursor": 42
+  "cursor": 42,
+  "watermark": 41
 }
 ```
 
-`cursor` is the highest `seq` returned (or the value of `since` when empty). Clients store it and pass it back as `since` next poll — polling is **resumable**: a client that dies and restarts resumes from its stored cursor without missing or re-reading anything it already consumed.
+- `cursor` is the highest `seq` returned (or the value of `since` when empty) — informational.
+- **`watermark` is the resume point** (v0.2): the highest `seq` below which every message is either not addressed to the caller or finalized for the caller, as computed by the **server** from authoritative per-reader state. Clients MUST persist and resume from `watermark`, never `cursor`. A client's claimed-but-unacked messages (including from a crashed previous run) block the watermark, so lease-expiry redeliveries are always picked up — see §6.2.
+- **Broadcast delivery detail (v0.2):** pickup responses carry the caller's own per-reader `delivery` record; observability responses (identity-less or `status=` filtered) carry the full `deliveries` array:
+
+```json
+{ "readerId": "qa-1", "state": "claimed", "attempts": 1, "claimAgent": "qa-1",
+  "leaseExpiresAt": "2026-09-30T10:20:30.123Z",
+  "createdAt": "2026-09-30T10:15:30.123Z", "updatedAt": "2026-09-30T10:15:30.321Z" }
+```
 
 Errors: `400` bad `since`/`wait` · `401` bad token / missing `X-Agent-ID` · `404` unknown board.
 
@@ -238,6 +253,31 @@ The dashboard refetches state via the REST API on each event. No message bodies 
 
 Errors: `401` bad token.
 
+### 5.7 Dead-letter management (v0.2)
+
+Dead messages (3 failed attempts — see §6.1) are visible via the `status=dead`
+observability filter (§5.4). The sender can recover or remove them:
+
+#### `POST /v1/messages/{id}/requeue` — requeue
+
+Returns a dead message to the queue: `dead → pending`, `attempts` reset to `0`
+(for broadcasts, every reader's delivery is reset). Requires `X-Agent-ID` =
+the message **sender**.
+
+Response `200` — the message (`state: "pending"`).
+
+Errors: `403` requeue by a non-sender · `404` unknown message · `409` requeueing a non-dead message · `409` requeueing a broadcast that has **no deliveries** (posted to a zero-member board — there is nothing to redeliver to).
+
+#### `DELETE /v1/messages/{id}` — purge
+
+Permanently deletes the message and all its deliveries (reply threads keep
+their ids as plain strings — no cascades). Requires `X-Agent-ID` = the message
+**sender**.
+
+Response `200` — `{ "ok": true, "deleted": "<id>" }`.
+
+Errors: `403` purge by a non-sender · `404` unknown message.
+
 ## 6. Delivery semantics
 
 ### 6.1 Lifecycle
@@ -256,12 +296,13 @@ Errors: `401` bad token.
               attempts >= 3 ? dead : pending (redeliver)
 ```
 
-- **Delivery matching** at pickup: a message is deliverable to reader `R` if it is `pending`, not ttl-expired, and `to` matches `R` — `agent:<R>` (R is the reader) · `role:<r>` (R declared `r`) · `broadcast`.
-- **Claim**: pickup atomically claims every matching pending message (single claimer per message — no duplicate claims).
+- **Delivery matching** at pickup: a message is deliverable to reader `R` if it is `pending`, not ttl/deadline-expired, and `to` matches `R` — `agent:<R>` (R is the reader) · `role:<r>` (R declared `r`) · `broadcast` (R has a delivery row).
+- **Claim**: pickup atomically claims every matching pending message (single claimer per message or per-delivery — no duplicate claims).
 - **Lease**: 300 seconds, renewable via `ack claimed`. If the claimer crashes without acking, the lease expires and the message returns to `pending` (or `dead` if `attempts >= 3`) — this is how the board self-heals.
-- **Retry / dead-letter**: a message is delivered at most **3 times** (`attempts` increments on each claim). After the 3rd failed attempt (`ack failed`, or lease expiry on the 3rd attempt) it enters `dead` — the dead-letter state, visible via the `status` observability filter. Dead messages are never redelivered; nothing purges them in v0.1.
-- **TTL**: a `pending`/`claimed` message whose `createdAt + ttl` has passed transitions to `expired` (terminal, never delivered).
-- **At-least-once**: the crash window (claimed but unacked) can cause redelivery of the *same message id*. Clients MUST dedupe received messages by `id` (their task-tracking state is the authority) and MUST use `idempotencyKey` when sending.
+- **Retry / dead-letter**: a message (or, for broadcasts, each reader's delivery) is delivered at most **3 times** (`attempts` increments on each claim). After the 3rd failed attempt (`ack failed`, or lease expiry on the 3rd attempt) it enters `dead` — the dead-letter state, visible via the `status` observability filter. Dead messages are never redelivered; nothing purges them automatically in v0.2 (see §5.7).
+- **Broadcast aggregates (v0.2):** the message row's `state` for broadcasts is an aggregate of its per-reader deliveries: `pending` while any delivery is active (pending/claimed) → `done` once all are terminal (any `done` wins) → `dead` if all failed → `expired` if all expired. **Per-reader independence:** one reader's failures/retries/leases never affect another's copy.
+- **TTL/deadline**: a `pending`/`claimed` message whose `createdAt + ttl` (or, for questions, whose `deadline`) has passed transitions to `expired` (terminal, never delivered). Broadcasts expire all readers' deliveries at once.
+- **At-least-once**: the crash window (claimed but unacked) can cause redelivery of the *same message id* (and, for broadcasts, the same delivery). Clients MUST dedupe received messages by `id` (their task-tracking state is the authority) and MUST use `idempotencyKey` when sending.
 
 ### 6.2 Cursor rules
 
@@ -269,7 +310,7 @@ Errors: `401` bad token.
 - `since` is **exclusive**: `seq > since`. The response's `cursor` is the new resume point.
 - No-op polls are cheap: with `wait=0` they return immediately with an empty list and unchanged cursor.
 - Cursors survive restarts (they are just integers the client persists).
-- **Client watermark rule:** a client must only advance its stored cursor past messages it has **finalized** (acked `done`/`failed`, or explicitly discarded). Advancing past *claimed-but-unacked* messages would skip lease-expiry redeliveries — breaking at-least-once.
+- **Watermark rule (v0.2):** the server computes the true watermark per reader (highest `seq` below which everything is finalized-or-not-theirs) and returns it on every pickup. Clients resume from it. Because the server knows a crashed run's claimed-but-unacked messages, no client-side max-over-batch heuristic can skip a redelivery — `Math.max` over a returned batch is **wrong** and MUST NOT be used (§5.4).
 - A client that passes a `since` from a *different* board simply gets messages with `seq > since` on *this* board — safe, because `seq` is globally monotonic.
 
 ### 6.3 Idempotency contract
@@ -296,9 +337,11 @@ Every error response:
 |---|---|---|
 | `400` | `bad_request` | Malformed JSON, missing required field, invalid query param. |
 | `401` | `unauthorized` | Missing/invalid bearer token, or missing `X-Agent-ID`. |
-| `404` | `not_found` | Unknown board (on pickup), unknown message id (on ack). |
+| `403` | `forbidden` | Valid identity but not the message sender (requeue/purge, §5.7). |
+| `404` | `not_found` | Unknown board (on pickup), unknown message id (on ack/requeue/purge). |
 | `409` | `duplicate_idempotency_key` | Same sender + same `idempotencyKey` — carries `originalMessageId`. |
 | `409` | `ack_conflict` | Ack from non-claimer, or invalid state transition. |
+| `409` | `state_conflict` | Requeueing a non-dead message (§5.7). |
 | `422` | `unprocessable` | Semantically invalid: unknown `type`/`priority`/`status`, malformed `to`, bad identifiers. |
 
 ## 9. Out of scope (v0.1)
@@ -309,8 +352,13 @@ Every error response:
 
 ## 10. Open questions (for Producer)
 
-Raised via issue #1 comments — none block the reference implementation:
+**Resolved for v0.2 (Producer decisions, recorded in `docs/sprint-2/plan.md`):**
 
-1. **Retry bound**: "retry (max 3)" is frozen as *max 3 total delivery attempts* (initial + 2 retries). If the Producer intended 3 *retries after* the initial delivery (4 total), it's a one-line change in §6.1 and the server.
-2. **`expired` state**: the `ttl` field implies an expiry terminal state, which the brief's lifecycle sketch doesn't list. Frozen as `pending/claimed → expired` (never delivered).
-3. **Priority is advisory** in v0.1 (FIFO delivery regardless of priority). If Producer wants high-priority preemption, that's a scheduling change for v0.2.
+1. ~~Retry bound~~ — **resolved:** max **3 total delivery attempts** (initial + 2 retries). §6.1.
+2. ~~`expired` terminal state~~ — **resolved:** keep; TTL and question deadlines share it.
+3. ~~Priority preemption~~ — **resolved:** advisory remains; no scheduling changes in v0.2 (revisit in v0.3).
+
+**Open (v0.2):**
+
+4. **Broadcast fan-out** — implemented per-reader (every member gets a copy). If the Producer wants per-reader read-state instead of copy-per-member (e.g. one row + read receipts), that's a v0.3 rework.
+5. **Per-agent credentials** vs shared workspace token — deferred to sprint 3 (brief §10.2).

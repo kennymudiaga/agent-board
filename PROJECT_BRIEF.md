@@ -89,14 +89,14 @@ POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
 - **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen (`docs/spec.md`); reference server (TypeScript + Hono + better-sqlite3 + Docker, long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI (init/join/heartbeat/send/read/ack, `--json`); OpenCode integration (`.opencode/agent/board.md` + `docs/opencode/quickstart.md`); CI (build + vitest on PR); read-only dashboard (static HTML + SSE, stretch done). 32 tests green after QA remediation (issues #8–#11); demo (Producer ↔ QA, zero paste) executed against the Dockerized server.
-- **Sprint 2 (planned — `docs/sprint-2/plan.md`, issues #13–#19):** cursor watermark hardening (issue #12), broadcast fan-out (per-reader deliveries, spec v0.2.0), `question` deadlines, VS Code extension (second provider), `@agentboard/cli` npm packaging, CI Docker build; stretch: dead-letter management.
+- **Sprint 2 (implementation complete — PR open):** spec **v0.2.0** (`docs/spec.md`). True cursor watermark (server-computed per-reader, zero message loss under crash — issue #12); broadcast fan-out (per-reader `deliveries`, independent retries); `question` deadlines + `late` responses; VS Code extension (webview panel, SecretStorage token, heartbeat via `ab`); `@agentboard/cli` npm packaging + release workflow; CI Docker build + ghcr publish on tag; dead-letter management (requeue/purge, sender-gated). 63 tests green; cross-tool demo executed (OpenCode ×2 + VS Code reviewer on one board: fan-out, deadline, crash test).
 
 ## 8. Roadmap
 
 | Sprint | Scope | Status |
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
-| 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build (stretch: dead-letter mgmt) | **Planned** — `docs/sprint-2/plan.md` |
+| 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Implemented — PR open** |
 | 3 | More clients (OpenDevin, etc.) · per-agent credentials · git archive · federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
 
 ## 9. Team & Workflow

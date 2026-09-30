@@ -135,6 +135,13 @@ export async function cmdSend(flags, json) {
     if (!Number.isInteger(ttl) || ttl < 0) usage('ttl must be a non-negative integer');
     body.ttl = ttl;
   }
+  if (flags.deadline !== undefined) {
+    // Mirror of the server's strict check (spec §3.1): ISO 8601 with timezone.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/.test(flags.deadline) || Number.isNaN(Date.parse(flags.deadline))) {
+      usage('--deadline must be ISO 8601 with an explicit timezone (e.g. 2026-09-30T12:00:00Z)');
+    }
+    body.deadline = flags.deadline; // questions only; server rejects on other types
+  }
   if (flags.idempotencyKey !== undefined) body.idempotencyKey = flags.idempotencyKey;
   if (flags.replyTo !== undefined) body.replyTo = flags.replyTo;
 
@@ -167,9 +174,11 @@ export async function cmdRead(flags, json) {
 
   let cursor = flags.since !== undefined ? Number(flags.since) : (cfg.cursors[board] ?? 0);
   if (!Number.isInteger(cursor) || cursor < 0) usage('since must be a non-negative integer');
-  // At-least-once: only advance the persisted cursor past *finalized* messages
-  // (acked done/failed). Claimed-but-unacked messages stay behind the cursor so
-  // lease-expiry redelivery is still picked up; dupes are suppressed in-process.
+  // At-least-once: the persisted cursor is the server-computed *watermark*
+  // (spec §6.2) — the highest seq below which everything is finalized-or-not-
+  // ours. Claimed-but-unacked messages block it, so lease-expiry redelivery is
+  // always picked up, even across crashes and mixed ack statuses (#12).
+  // The in-process seen set only suppresses duplicate re-prints.
   const seen = new Set();
 
   do {
@@ -191,16 +200,16 @@ export async function cmdRead(flags, json) {
             agent: cfg.agentId,
             body: { status: ackStatus, error: flags.error ?? null },
           });
-          // Watermark rule (spec §6.2): only *finalized* messages advance the
-          // cursor. `claimed` is lease renewal, not finalization — keep the
-          // cursor behind so lease-expiry redelivery is still picked up.
-          if (ackStatus !== 'claimed') cursor = Math.max(cursor, m.seq);
           if (!json) console.log(`[ack] ${m.id} ${ackStatus}`);
         } catch (e) {
           console.error(`[ack] ${m.id} failed: ${e.message}`);
         }
       }
     }
+    // Resume from the server watermark. Against an older server that does not
+    // send one, keep the current cursor (conservative — never advances past
+    // unverified mail).
+    cursor = data.watermark ?? cursor;
     cfg.cursors[board] = cursor;
     saveConfig(cfg);
     if (once) return;
@@ -227,5 +236,46 @@ export async function cmdAck(flags, json) {
     console.log(JSON.stringify(m));
   } else {
     console.log(`acked ${m.id} -> ${m.state}`);
+  }
+}
+
+// ------------------------------------------------------------------ dead / requeue / purge (v0.2 §5.7)
+
+export async function cmdDead(flags, json) {
+  const cfg = loadConfig();
+  const board = flags.board ?? cfg.boards[0];
+  if (!board) usage('dead requires --board (or join a board first)');
+  const data = await apiCall(cfg, 'GET', `/v1/boards/${board}/messages?status=dead`, { agent: cfg.agentId });
+  if (json) {
+    for (const m of data.messages) console.log(JSON.stringify(m));
+  } else if (data.messages.length === 0) {
+    console.log(`no dead messages on ${board}`);
+  } else {
+    for (const m of data.messages) console.log(`[dead] ${formatMessage(m)}`);
+  }
+}
+
+export async function cmdRequeue(flags, json) {
+  const cfg = loadConfig();
+  const id = flags.id ?? flags._[0];
+  if (!id) usage('requeue requires --id', 'ab requeue --id msg_xxx');
+  const data = await apiCall(cfg, 'POST', `/v1/messages/${id}/requeue`, { agent: cfg.agentId });
+  const m = data.message;
+  if (json) {
+    console.log(JSON.stringify(m));
+  } else {
+    console.log(`requeued ${m.id} -> ${m.state} (attempts reset)`);
+  }
+}
+
+export async function cmdPurge(flags, json) {
+  const cfg = loadConfig();
+  const id = flags.id ?? flags._[0];
+  if (!id) usage('purge requires --id', 'ab purge --id msg_xxx');
+  await apiCall(cfg, 'DELETE', `/v1/messages/${id}`, { agent: cfg.agentId });
+  if (json) {
+    console.log(JSON.stringify({ ok: true, deleted: id }));
+  } else {
+    console.log(`purged ${id}`);
   }
 }
