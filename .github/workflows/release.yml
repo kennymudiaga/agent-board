@@ -4,9 +4,15 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: write
+
 jobs:
   npm-publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # trusted publishing (OIDC) — no NODE_AUTH_TOKEN
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,15 +23,36 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish @agentboard/cli
-        run: npm publish --workspace cli --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish @agentboard/cli (trusted publishing, provenance)
+        run: npm publish --workspace cli --access public --provenance
+
+  ghcr-push:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/kennymudiaga/agent-board:${{ github.ref_name }}
+            ghcr.io/kennymudiaga/agent-board:latest
 
   github-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub Release
