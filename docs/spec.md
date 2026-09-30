@@ -186,11 +186,13 @@ Response `200`:
 ```json
 {
   "messages": [ { "id": "msg_1", "board": "sprint-7", "seq": 42, "from": "producer-1", "to": "role:qa", "type": "request", "payload": { "text": "review PR #12" }, "priority": "normal", "ttl": null, "replyTo": null, "state": "claimed", "attempts": 1, "createdAt": "2026-09-30T10:15:30.123Z", "updatedAt": "2026-09-30T10:15:30.321Z" } ],
-  "cursor": 42
+  "cursor": 42,
+  "watermark": 41
 }
 ```
 
-`cursor` is the highest `seq` returned (or the value of `since` when empty). Clients store it and pass it back as `since` next poll — polling is **resumable**: a client that dies and restarts resumes from its stored cursor without missing or re-reading anything it already consumed.
+- `cursor` is the highest `seq` returned (or the value of `since` when empty) — informational.
+- **`watermark` is the resume point** (v0.2): the highest `seq` below which every message is either not addressed to the caller or finalized for the caller, as computed by the **server** from authoritative per-reader state. Clients MUST persist and resume from `watermark`, never `cursor`. A client's claimed-but-unacked messages (including from a crashed previous run) block the watermark, so lease-expiry redeliveries are always picked up — see §6.2.
 
 Errors: `400` bad `since`/`wait` · `401` bad token / missing `X-Agent-ID` · `404` unknown board.
 
@@ -269,7 +271,7 @@ Errors: `401` bad token.
 - `since` is **exclusive**: `seq > since`. The response's `cursor` is the new resume point.
 - No-op polls are cheap: with `wait=0` they return immediately with an empty list and unchanged cursor.
 - Cursors survive restarts (they are just integers the client persists).
-- **Client watermark rule:** a client must only advance its stored cursor past messages it has **finalized** (acked `done`/`failed`, or explicitly discarded). Advancing past *claimed-but-unacked* messages would skip lease-expiry redeliveries — breaking at-least-once.
+- **Watermark rule (v0.2):** the server computes the true watermark per reader (highest `seq` below which everything is finalized-or-not-theirs) and returns it on every pickup. Clients resume from it. Because the server knows a crashed run's claimed-but-unacked messages, no client-side max-over-batch heuristic can skip a redelivery — `Math.max` over a returned batch is **wrong** and MUST NOT be used (§5.4).
 - A client that passes a `since` from a *different* board simply gets messages with `seq > since` on *this* board — safe, because `seq` is globally monotonic.
 
 ### 6.3 Idempotency contract

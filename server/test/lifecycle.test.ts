@@ -427,4 +427,84 @@ describe('message lifecycle', () => {
     expect((await api(app, 'GET', '/v1/boards/nope/messages', { agent: 'qa-1' })).status).toBe(404);
     expect((await api(app, 'POST', '/v1/messages/msg_nope/ack', { agent: 'qa-1', body: { status: 'done' } })).status).toBe(404);
   });
+
+  describe('true cursor watermark (T1, #12)', () => {
+    async function send(app: ReturnType<typeof createApp>, to: string, text: string) {
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to, type: 'note', payload: { text } },
+      });
+      expect(res.status).toBe(201);
+      return (await res.json()).message as { id: string; seq: number };
+    }
+    async function pickup(app: ReturnType<typeof createApp>, agent: string, query = '') {
+      return (await (await api(app, 'GET', `/v1/boards/sprint-7/messages${query}`, { agent })).json()) as {
+        messages: { id: string; seq: number; attempts: number }[];
+        watermark: number;
+      };
+    }
+
+    it('pickup responses carry a watermark that reflects finalization', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const msg = await send(app, 'role:qa', 'x');
+      // Claimed by me -> blocks the watermark (min non-finalized = 1 -> wm 0).
+      expect((await pickup(app, 'qa-1')).watermark).toBe(0);
+      // Finalized -> watermark advances past it.
+      await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+      expect((await pickup(app, 'qa-1')).watermark).toBe(msg.seq);
+    });
+
+    it('a claimed-but-unacked message blocks forever, even past newer finalized ones (#12)', async () => {
+      const { store, app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const a = await send(app, 'role:qa', 'a');
+      await pickup(app, 'qa-1'); // claim a
+      const b = await send(app, 'role:qa', 'b'); // arrives while a is still claimed
+      const view = await pickup(app, 'qa-1');
+      expect(view.messages).toHaveLength(1); // only b is pending
+      expect(view.messages[0].id).toBe(b.id);
+      expect(view.watermark).toBe(a.seq - 1); // a still blocks
+
+      // Finalize b: watermark must NOT jump past a.
+      await api(app, 'POST', `/v1/messages/${b.id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+      expect((await pickup(app, 'qa-1')).watermark).toBe(a.seq - 1);
+
+      // Crash window: a's lease expires -> redelivery with attempts=2.
+      store.db.prepare('UPDATE messages SET lease_expires_at = ? WHERE id = ?').run(Date.now() - 1, a.id);
+      const redelivered = await pickup(app, 'qa-1');
+      expect(redelivered.messages).toHaveLength(1);
+      expect(redelivered.messages[0].id).toBe(a.id);
+      expect(redelivered.messages[0].attempts).toBe(2);
+    });
+
+    it('messages claimed by another reader do not block', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const a = await send(app, 'role:qa', 'a');
+      await pickup(app, 'qa-1'); // qa-1 claims a
+      const b = await send(app, 'role:qa', 'b');
+      const forTwo = await pickup(app, 'qa-2'); // qa-2 claims b
+      expect(forTwo.messages[0].id).toBe(b.id);
+      await api(app, 'POST', `/v1/messages/${b.id}/ack`, { agent: 'qa-2', body: { status: 'done' } });
+      // qa-1's watermark is still blocked by its own claim of a.
+      expect((await pickup(app, 'qa-1')).watermark).toBe(a.seq - 1);
+      await api(app, 'POST', `/v1/messages/${a.id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+      const done = await pickup(app, 'qa-1');
+      expect(done.messages).toHaveLength(0);
+      expect(done.watermark).toBe(b.seq);
+    });
+
+    it('messages addressed to others never block', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'dev-1', { roles: ['dev'] });
+      await send(app, 'agent:dev-1', '1');
+      await send(app, 'agent:dev-1', '2');
+      const view = await pickup(app, 'qa-1');
+      expect(view.messages).toHaveLength(0);
+      expect(view.watermark).toBe(2); // passes messages that are not qa-1's mail
+    });
+  });
 });

@@ -226,7 +226,7 @@ describe('ab CLI against the reference server', () => {
 
       // Watermark must NOT have advanced past the message.
       const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
-      expect(cfg.cursors['sprint-7']).toBe(0);
+      expect(cfg.cursors['sprint-7']).toBe(msg.seq - 1);
 
       // Simulate the crash window: lease expires server-side.
       store.db
@@ -241,6 +241,53 @@ describe('ab CLI against the reference server', () => {
 
       // Attempt count proves the redelivery was claimed anew.
       const row = store.db.prepare('SELECT attempts FROM messages WHERE id = ?').get(msg.id);
+      expect(row.attempts).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+
+      // msg_5 arrives first; msg_6 arrives AFTER msg_5 is claimed (the #12 shape).
+      const five = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'five', '--json'], { cwd: dir });
+      const msg5 = JSON.parse(five.stdout);
+
+      // Run 1: claim msg_5 with --ack claimed, then "crash" (process exits).
+      const claim = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'claimed'], { cwd: dir });
+      expect(claim.code).toBe(0, claim.stderr);
+      expect(claim.stdout).toContain(msg5.id);
+
+      // msg_6 arrives while msg_5 is still claimed (invisible to pickup).
+      const six = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'six', '--json'], { cwd: dir });
+      const msg6 = JSON.parse(six.stdout);
+
+      // Run 2 (restart): finalize msg_6 with --ack done. The watermark MUST NOT
+      // jump past msg_5.
+      const finalize = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'done'], { cwd: dir });
+      expect(finalize.code).toBe(0, finalize.stderr);
+      expect(finalize.stdout).toContain(msg6.id);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      // The watermark must NOT have passed msg_5 (earlier tests may leave other
+      // claimed-but-unfinalized messages that block it even earlier — the
+      // property that matters is: strictly below msg_5's seq).
+      expect(cfg.cursors['sprint-7']).toBeLessThan(msg5.seq);
+
+      // Crash window: msg_5's lease expires server-side.
+      store.db
+        .prepare('UPDATE messages SET lease_expires_at = ? WHERE id = ?')
+        .run(Date.now() - 1, msg5.id);
+
+      // Run 3: redelivery of msg_5 must arrive (attempts=2).
+      const redelivered = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(redelivered.code).toBe(0, redelivered.stderr);
+      expect(redelivered.stdout).toContain(msg5.id);
+      const row = store.db.prepare('SELECT attempts FROM messages WHERE id = ?').get(msg5.id);
       expect(row.attempts).toBe(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });

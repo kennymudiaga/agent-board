@@ -167,9 +167,11 @@ export async function cmdRead(flags, json) {
 
   let cursor = flags.since !== undefined ? Number(flags.since) : (cfg.cursors[board] ?? 0);
   if (!Number.isInteger(cursor) || cursor < 0) usage('since must be a non-negative integer');
-  // At-least-once: only advance the persisted cursor past *finalized* messages
-  // (acked done/failed). Claimed-but-unacked messages stay behind the cursor so
-  // lease-expiry redelivery is still picked up; dupes are suppressed in-process.
+  // At-least-once: the persisted cursor is the server-computed *watermark*
+  // (spec §6.2) — the highest seq below which everything is finalized-or-not-
+  // ours. Claimed-but-unacked messages block it, so lease-expiry redelivery is
+  // always picked up, even across crashes and mixed ack statuses (#12).
+  // The in-process seen set only suppresses duplicate re-prints.
   const seen = new Set();
 
   do {
@@ -191,16 +193,15 @@ export async function cmdRead(flags, json) {
             agent: cfg.agentId,
             body: { status: ackStatus, error: flags.error ?? null },
           });
-          // Watermark rule (spec §6.2): only *finalized* messages advance the
-          // cursor. `claimed` is lease renewal, not finalization — keep the
-          // cursor behind so lease-expiry redelivery is still picked up.
-          if (ackStatus !== 'claimed') cursor = Math.max(cursor, m.seq);
           if (!json) console.log(`[ack] ${m.id} ${ackStatus}`);
         } catch (e) {
           console.error(`[ack] ${m.id} failed: ${e.message}`);
         }
       }
     }
+    // Resume from the server watermark; fall back to the response cursor for
+    // older servers that do not send one.
+    cursor = data.watermark ?? cursor;
     cfg.cursors[board] = cursor;
     saveConfig(cfg);
     if (once) return;

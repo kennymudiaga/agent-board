@@ -367,7 +367,11 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       messages = store.claimMessages(board, forId, since, Date.now());
     }
     const cursor = messages.length ? messages[messages.length - 1].seq : since;
-    return c.json({ messages, cursor }, 200);
+    // True watermark (spec §6.2, v0.2): where the client may safely resume.
+    // Server-computed so a crashed run's claimed-but-unacked messages still
+    // block it (fixes #12 — clients must resume from `watermark`, not `cursor`).
+    const watermark = store.readerWatermark(board, forId, since, Date.now());
+    return c.json({ messages, cursor, watermark }, 200);
   });
 
   // --- POST /v1/messages/:id/ack --------------------------------------------

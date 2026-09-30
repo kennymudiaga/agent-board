@@ -372,6 +372,42 @@ export class Store {
     return rows.map(toMessage);
   }
 
+  /**
+   * True cursor watermark for a reader (spec §6.2, v0.2): the highest seq S
+   * such that every message with `since < seq <= S` is either NOT addressed to
+   * the reader or FINALIZED for the reader. Computed from authoritative server
+   * state, so a crashed client's claimed-but-unacked messages still block the
+   * watermark — a client-side max-over-batch can never skip redeliveries.
+   *
+   * A message blocks the watermark for the reader when it is addressed to the
+   * reader and not finalized for them: pending (they could still claim it) or
+   * claimed BY them. Claimed by another reader (role/broadcast race) or any
+   * terminal state does not block.
+   */
+  readerWatermark(board: string, reader: string, since: number, now: number): number {
+    this.sweep(board, now);
+    const minSeq = this.db
+      .prepare(
+        `SELECT MIN(seq) AS min_seq FROM messages m
+         WHERE m.board = ? AND m.seq > ?
+           AND (
+             (m.to_kind = 'agent' AND m.to_value = ?
+               AND m.state IN ('pending','claimed') AND (m.claim_agent IS NULL OR m.claim_agent = ?))
+             OR (m.to_kind = 'role' AND m.to_value IN
+                   (SELECT value FROM json_each((SELECT roles FROM agents WHERE id = ?)))
+               AND m.state IN ('pending','claimed') AND (m.claim_agent IS NULL OR m.claim_agent = ?))
+             OR (m.to_kind = 'broadcast' AND m.state IN ('pending','claimed')
+               AND (m.claim_agent IS NULL OR m.claim_agent = ?))
+           )`,
+      )
+      .get(board, since, reader, reader, reader, reader, reader) as { min_seq: number | null } | undefined;
+    if (minSeq?.min_seq != null) return minSeq.min_seq - 1;
+    const maxSeq = this.db
+      .prepare('SELECT MAX(seq) AS max_seq FROM messages WHERE board = ?')
+      .get(board) as { max_seq: number | null };
+    return maxSeq.max_seq ?? since;
+  }
+
   getMessage(id: string): MessageRecord | undefined {
     const row = this.getRow(id);
     return row ? toMessage(row) : undefined;
