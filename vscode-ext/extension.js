@@ -92,6 +92,11 @@ async function openBoard(context) {
       state.watcher.close();
       state.watcher = undefined;
     }
+    // No zombie heartbeat timer after the panel closes (#21).
+    if (state.timer) {
+      clearInterval(state.timer);
+      state.timer = undefined;
+    }
   });
 }
 

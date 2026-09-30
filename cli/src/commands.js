@@ -136,7 +136,10 @@ export async function cmdSend(flags, json) {
     body.ttl = ttl;
   }
   if (flags.deadline !== undefined) {
-    if (Number.isNaN(Date.parse(flags.deadline))) usage('--deadline must be an ISO 8601 date string');
+    // Mirror of the server's strict check (spec §3.1): ISO 8601 with timezone.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/.test(flags.deadline) || Number.isNaN(Date.parse(flags.deadline))) {
+      usage('--deadline must be ISO 8601 with an explicit timezone (e.g. 2026-09-30T12:00:00Z)');
+    }
     body.deadline = flags.deadline; // questions only; server rejects on other types
   }
   if (flags.idempotencyKey !== undefined) body.idempotencyKey = flags.idempotencyKey;
@@ -203,8 +206,9 @@ export async function cmdRead(flags, json) {
         }
       }
     }
-    // Resume from the server watermark; fall back to the response cursor for
-    // older servers that do not send one.
+    // Resume from the server watermark. Against an older server that does not
+    // send one, keep the current cursor (conservative — never advances past
+    // unverified mail).
     cursor = data.watermark ?? cursor;
     cfg.cursors[board] = cursor;
     saveConfig(cfg);

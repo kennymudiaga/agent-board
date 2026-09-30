@@ -48,7 +48,7 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 | `ttl` | integer | no | Seconds from creation after which the message is undeliverable. Absent/`0` = no expiry. Expired messages transition to `expired` (terminal) and are never delivered. |
 | `idempotencyKey` | string | no | Client-generated key for at-most-once creation (§6.3). Unique per sender. |
 | `replyTo` | string | no | Id of the message this one answers. Forms threads. |
-| `deadline` | string | no | **Questions only (v0.2).** ISO 8601 UTC. When `now > deadline` the question is undeliverable: sweep expires it (same terminal state as TTL). Past deadlines are accepted and expire immediately. Rejected (`422`) on any other type. |
+| `deadline` | string | no | **Questions only (v0.2).** Strict ISO 8601 **with an explicit timezone** (`Z` or `±hh:mm` offset) — natural-language dates and timezone-less strings are rejected (`422`): the latter would parse in server-local time, violating the "server timestamps only" contract. When `now > deadline` the question is undeliverable: sweep expires it (same terminal state as TTL). Past deadlines are accepted and expire immediately. Rejected (`422`) on any other type. |
 | `late` | boolean | (server) | **Responses only (v0.2).** `true` when the replied-to question had expired (or was past its deadline) at response time. Late responses are accepted — the answer is still recorded. |
 | `state` | string | (server) | `pending` · `claimed` · `done` · `failed` · `dead` · `expired` (§6.1). |
 | `attempts` | integer | (server) | Number of delivery attempts so far (incremented on each claim). |
@@ -266,7 +266,7 @@ the message **sender**.
 
 Response `200` — the message (`state: "pending"`).
 
-Errors: `403` requeue by a non-sender · `404` unknown message · `409` requeueing a non-dead message.
+Errors: `403` requeue by a non-sender · `404` unknown message · `409` requeueing a non-dead message · `409` requeueing a broadcast that has **no deliveries** (posted to a zero-member board — there is nothing to redeliver to).
 
 #### `DELETE /v1/messages/{id}` — purge
 

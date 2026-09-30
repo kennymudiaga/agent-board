@@ -16,7 +16,9 @@ export function configPath(cwd = process.cwd()) {
 export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
   const path = configPath(cwd);
   let file = {};
+  let existed = false;
   if (existsSync(path)) {
+    existed = true;
     try {
       file = JSON.parse(readFileSync(path, 'utf8'));
     } catch {
@@ -27,6 +29,10 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
   }
   return {
     path,
+    fromEnv: !existed,
+    // A token that came from the environment must never be written to disk
+    // (issue #25): env-only identities stay env-only.
+    tokenFromEnv: process.env.AB_TOKEN !== undefined,
     server: process.env.AB_SERVER ?? file.server,
     token: process.env.AB_TOKEN ?? file.token,
     agentId: process.env.AB_AGENT_ID ?? file.agentId,
@@ -38,15 +44,20 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
 }
 
 export function saveConfig(cfg) {
-  const payload = {
-    server: cfg.server,
-    token: cfg.token,
-    agentId: cfg.agentId,
-    provider: cfg.provider ?? undefined,
-    roles: cfg.roles,
-    boards: cfg.boards,
-    cursors: cfg.cursors,
-  };
+  // Env-only runs (no pre-existing config file) persist cursors and nothing
+  // else — the env is the identity source, and a token from AB_TOKEN must
+  // never reach disk (issue #25).
+  const payload = cfg.fromEnv
+    ? { cursors: cfg.cursors }
+    : {
+        server: cfg.server,
+        token: cfg.tokenFromEnv ? undefined : cfg.token,
+        agentId: cfg.agentId,
+        provider: cfg.provider ?? undefined,
+        roles: cfg.roles,
+        boards: cfg.boards,
+        cursors: cfg.cursors,
+      };
   writeFileSync(cfg.path, `${JSON.stringify(payload, null, 2)}\n`);
 }
 

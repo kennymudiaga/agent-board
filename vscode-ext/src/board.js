@@ -20,17 +20,28 @@ async function fetchBoardState({ server, board, token }) {
 /**
  * Watch a board over the SSE stream (v0.2 dashboard endpoint). `onEvent` is
  * called on every message/agent event (the host refetches full state via
- * fetchBoardState). Returns { close() }.
+ * fetchBoardState), and on 'connect' when a (re)connection succeeds.
+ *
+ * Reconnects with exponential backoff when the stream drops, so the panel
+ * stays live across server restarts and network blips (#21).
+ * Returns { close() }.
  */
-function watchBoard({ server, board, token }, onEvent) {
+function watchBoard({ server, board, token }, onEvent, { backoffBaseMs = 1000 } = {}) {
   const url = `${server}/v1/events?board=${encodeURIComponent(board)}&token=${encodeURIComponent(token)}`;
   let closed = false;
-  const controller = new AbortController();
+  let attempt = 0;
+  let retryTimer = null;
+  let currentController = null;
 
-  (async () => {
+  const connect = async () => {
+    if (closed) return;
+    const controller = new AbortController();
+    currentController = controller;
     try {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+      attempt = 0; // connected — reset backoff
+      onEvent('connect');
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -47,14 +58,23 @@ function watchBoard({ server, board, token }, onEvent) {
         }
       }
     } catch {
-      /* aborted or connection dropped — host polls fallback if needed */
+      /* stream dropped — fall through to reconnect */
     }
-  })();
+    // Schedule a reconnect with backoff (1s, 2s, 4s, ... capped at 30s).
+    if (!closed) {
+      const delay = Math.min(backoffBaseMs * 2 ** attempt, 30_000);
+      attempt++;
+      retryTimer = setTimeout(connect, delay);
+    }
+  };
+
+  connect();
 
   return {
     close() {
       closed = true;
-      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+      if (currentController) currentController.abort(); // end the in-flight stream
     },
   };
 }

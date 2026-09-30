@@ -766,6 +766,25 @@ describe('message lifecycle', () => {
       expect((await post({ to: 'role:qa', type: 'question', payload: {}, deadline: new Date(Date.now() + 60_000).toISOString() })).status).toBe(201);
     });
 
+    it('rejects non-ISO and timezone-less deadlines (regression #24)', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      const post = (deadline: unknown) =>
+        api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'question', payload: {}, deadline },
+        });
+      // Natural language passes Date.parse but is not ISO 8601 -> 422.
+      expect((await post('March 5, 2025')).status).toBe(422);
+      // Timezone-less ISO parses in server-local time -> 422.
+      expect((await post('2026-09-30T23:59:59')).status).toBe(422);
+      expect((await post('2026-09-30T23:59:59.123')).status).toBe(422);
+      // Explicit timezone forms are accepted (UTC and offsets).
+      expect((await post('2026-09-30T23:59:59Z')).status).toBe(201);
+      expect((await post('2026-09-30T23:59:59+02:00')).status).toBe(201);
+      expect((await post('2026-09-30T23:59:59.123-05:30')).status).toBe(201);
+    });
+
     it('a broadcast question expires all deliveries at its deadline', async () => {
       const { app } = makeCtx();
       await heartbeat(app, 'qa-1', { roles: ['qa'] });
@@ -873,6 +892,52 @@ describe('message lifecycle', () => {
       expect((await api(app, 'DELETE', `/v1/messages/${sent.message.id}`, { agent: 'producer-1' })).status).toBe(200);
       expect((await api(app, 'POST', `/v1/messages/${sent.message.id}/ack`, { agent: 'qa-1', body: { status: 'done' } })).status).toBe(404);
       expect((await api(app, 'DELETE', `/v1/messages/${sent.message.id}`, { agent: 'producer-1' })).status).toBe(404);
+    });
+
+    it('requeueing a zero-member broadcast is an honest 409 (regression #23)', async () => {
+      const { app } = makeCtx();
+      // No members on sprint-7 -> broadcast dead-letters immediately.
+      const sent = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'broadcast', type: 'note', payload: { text: 'nobody home' } },
+        })
+      ).json();
+      expect(sent.message.state).toBe('dead');
+      const res = await api(app, 'POST', `/v1/messages/${sent.message.id}/requeue`, { agent: 'producer-1' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error.code).toBe('state_conflict');
+      // Still dead, not silently "requeued".
+      const dead = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=dead', { agent: 'qa-1' })).json();
+      expect(dead.messages.some((m: { id: string }) => m.id === sent.message.id)).toBe(true);
+    });
+  });
+
+  describe('broadcast aggregate after expiry (regression #22)', () => {
+    it('"any done wins": a done delivery keeps the message done when the ttl expires', async () => {
+      const { store, app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'reviewer-1', { roles: ['reviewer'] });
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to: 'broadcast', type: 'note', payload: { text: 'done before ttl' }, ttl: 60 },
+      });
+      const msg = (await res.json()).message as { id: string };
+
+      // qa-1 completes before the ttl; reviewer-1 leaves its copy pending.
+      const qaMail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+      await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+
+      // ttl elapses; sweep runs on the next pickup.
+      store.db.prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, msg.id);
+      const view = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=done', { agent: 'qa-1' })).json();
+      const found = view.messages.find((m: { id: string }) => m.id === msg.id);
+      expect(found).toBeDefined();
+      expect(found.state).toBe('done'); // not 'expired' — any done wins
+      // Sender is a member too: producer's pending delivery also expires.
+      const states = found.deliveries.map((d: { state: string }) => d.state).sort();
+      expect(states).toEqual(['done', 'expired', 'expired']);
     });
   });
 });

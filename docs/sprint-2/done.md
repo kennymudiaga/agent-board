@@ -48,3 +48,15 @@ Spec bumped to **v0.2.0** (§3.1 deadline/late, §3.2 fan-out, §3.3 question de
 - Merge the sprint-2 PR (regular merge), close issues #12–#19.
 - QA sign-off on the sprint-2 demo (fan-out + deadline + crash test), per the plan's DoD.
 - First tag `v0.2.0` triggers npm publish + ghcr push + GitHub Release (NPM_TOKEN secret required).
+
+## QA remediation (2026-09-30)
+
+QA review (`docs/qa/sprint-2-signoff.md`) initially **BLOCKED** on #21 (VS Code panel SSE liveness). All findings fixed on `feature/sprint-2`, regression-tested:
+
+1. **#21 (major)** — `watchBoard` reconnects with exponential backoff + `connect` events; `close()` aborts the stream; heartbeat timer cleared on panel dispose. Regression test with a flaky SSE endpoint.
+2. **#22 (minor)** — sweep recomputes aggregates for all broadcasts → "any done wins" after TTL expiry. Regression test.
+3. **#23 (minor)** — requeueing a zero-delivery broadcast → 409 `state_conflict` (spec §5.7). Regression test.
+4. **#24 (minor)** — strict ISO 8601-with-timezone deadline validation (server + CLI); spec §3.1 clarified. Regression tests.
+5. **#25 (minor)** — env-provided tokens are never written to disk; pure env runs persist cursors only. Regression test.
+
+**Suite after remediation: 68/68 green** (was 63). Build clean; CI re-run on the branch pending. Ready for QA re-review.

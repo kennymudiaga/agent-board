@@ -600,7 +600,9 @@ export class Store {
 
   /**
    * Dead-letter requeue (v0.2, spec §5.7): dead -> pending with attempts reset.
-   * Sender-only. Broadcasts reset every reader's delivery.
+   * Sender-only. Broadcasts reset every reader's delivery. A broadcast with no
+   * deliveries at all (posted to a zero-member board) cannot be requeued —
+   * there is nothing to redeliver to (409 state_conflict).
    */
   requeueMessage(
     id: string,
@@ -612,6 +614,10 @@ export class Store {
     if (row.from_agent !== sender) return { forbidden: true };
     if (row.state !== 'dead') return { wrongState: true };
     if (row.to_kind === 'broadcast') {
+      const deliveries = this.db
+        .prepare('SELECT COUNT(*) AS n FROM deliveries WHERE message_id = ?')
+        .get(id) as { n: number };
+      if (deliveries.n === 0) return { wrongState: true }; // nothing to requeue to
       this.db
         .prepare("UPDATE deliveries SET state = 'pending', attempts = 0, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE message_id = ?")
         .run(now, id);
@@ -735,9 +741,10 @@ export class Store {
         )
         .run(now, ...ids);
     }
-    // Recompute broadcast aggregates so message state tracks its deliveries.
+    // Recompute broadcast aggregates so message state tracks its deliveries
+    // (including broadcasts that just expired — "any done wins" per §6.1).
     const broadcasts = this.db
-      .prepare("SELECT id FROM messages WHERE board = ? AND to_kind = 'broadcast' AND state IN ('pending','claimed')")
+      .prepare("SELECT id FROM messages WHERE board = ? AND to_kind = 'broadcast'")
       .all(board) as { id: string }[];
     for (const b of broadcasts) this.recomputeMessageState(b.id, now);
   }

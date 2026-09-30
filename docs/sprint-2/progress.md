@@ -81,3 +81,19 @@
   - Demo caveat: the VS Code *panel* leg was simulated with the CLI (identical backend); the extension's own logic is covered by its 4 unit tests.
 - Handoff written: `docs/sprint-2/done.md`, README + PROJECT_BRIEF §7/§8 updated.
 - **Next:** push, PR referencing issues #12–#19.
+
+## 2026-09-30 — QA review → BLOCKED (#21) → remediation round
+
+QA sign-off (`docs/qa/sprint-2-signoff.md`) blocked PR #20 on **#21 (major)** — VS Code panel SSE liveness — and recommended 4 minor fixes (#22–#25). All five fixed, regression-tested:
+
+| Issue | Severity | Fix |
+|---|---|---|
+| #21 panel goes stale on SSE drop | major | `watchBoard` now **reconnects with exponential backoff** (1s→2s→…cap 30s; resets on connect) and emits `connect` events so the host refetches; `close()` aborts the in-flight stream (also fixed a hang I introduced while rewriting). Heartbeat timer cleared on panel dispose. Regression test: flaky SSE endpoint that drops the first connection → reconnect + agent event received. |
+| #22 aggregate 'expired' overrides 'done' | minor | Sweep now recomputes aggregates for **all** broadcasts (not just pending/claimed) → "any done wins" holds after TTL expiry. Regression test: done + expired deliveries → message `done`. |
+| #23 zero-member requeue silent no-op | minor | `requeue` of a broadcast with zero deliveries → **409 `state_conflict`** (honest — nothing to redeliver to); documented in spec §5.7. Regression test. |
+| #24 lax deadline validation | minor | Strict ISO 8601 **with explicit timezone** on server (`isValidIso8601Utc`) and CLI: `"March 5, 2025"` and timezone-less strings → 422; `Z`/offset forms accepted. Spec §3.1 clarified. Regression tests (server + CLI). |
+| #25 env-only token written to disk | minor | `loadConfig` tracks `fromEnv` + `tokenFromEnv`; `saveConfig` persists **cursors only** for pure env runs and **never writes a token that came from `AB_TOKEN`**. Regression test: two env-only `read` runs, config file has no `token` key. |
+
+- Also fixed the misleading `data.watermark ?? cursor` fallback comment (QA non-blocking observation).
+- **Suite: 68/68 green** (was 63). Build clean.
+- **Next:** re-run CI on the updated branch, re-submit for QA sign-off.

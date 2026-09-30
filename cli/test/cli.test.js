@@ -307,6 +307,42 @@ describe('ab CLI against the reference server', () => {
       );
       expect(bad.code).not.toBe(0);
       expect(bad.stderr).toContain('question');
+
+      // Non-ISO / timezone-less deadlines are rejected client-side too (#24).
+      const lax = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'question', '--message', 'x', '--deadline', 'March 5, 2025'],
+        { cwd: dir },
+      );
+      expect(lax.code).not.toBe(0);
+      expect(lax.stderr).toContain('timezone');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('env-only identity never persists the token to disk (regression #25)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // No `ab init` — identity comes purely from env (the extension's flow).
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(read.code).toBe(0, read.stderr);
+
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.token).toBeUndefined(); // never written to disk
+      expect(cfg.server).toBeUndefined();
+      expect(typeof cfg.cursors).toBe('object'); // cursors still persist
+
+      // A second env-only run (file now exists) still must not leak the token.
+      const again = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(again.code).toBe(0, again.stderr);
+      const cfg2 = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg2.token).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

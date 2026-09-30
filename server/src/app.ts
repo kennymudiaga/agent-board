@@ -52,6 +52,17 @@ function isStringList(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string' && x.length <= 64);
 }
 
+/**
+ * Strict ISO 8601 with an explicit timezone (spec §3.1: "ISO 8601 UTC,
+ * server-validated"). Natural-language dates and timezone-less strings are
+ * rejected — the latter would parse in server-local time, violating the
+ * "server timestamps only" contract.
+ */
+const ISO_8601_TZ_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+export function isValidIso8601Utc(v: unknown): v is string {
+  return typeof v === 'string' && ISO_8601_TZ_RE.test(v) && !Number.isNaN(Date.parse(v));
+}
+
 function parseTo(raw: unknown): { kind: 'agent' | 'role' | 'broadcast'; value: string | null } | undefined {
   if (typeof raw !== 'string') return undefined;
   if (raw === 'broadcast') return { kind: 'broadcast', value: null };
@@ -260,11 +271,11 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       // Spec §3.1: ttl 0 means no expiry — normalize to NULL.
       ttl = (body.ttl as number) === 0 ? null : (body.ttl as number);
     }
-    // v0.2: questions may carry a deadline (ISO 8601 UTC, server-validated).
+    // v0.2: questions may carry a deadline (strict ISO 8601 with timezone).
     let deadline: number | null = null;
     if (body.deadline !== undefined) {
-      if (typeof body.deadline !== 'string' || Number.isNaN(Date.parse(body.deadline))) {
-        return error(c, 422, 'unprocessable', 'deadline must be a valid ISO 8601 date string');
+      if (!isValidIso8601Utc(body.deadline)) {
+        return error(c, 422, 'unprocessable', 'deadline must be ISO 8601 with an explicit timezone (e.g. 2026-09-30T12:00:00Z)');
       }
       if (type !== 'question') {
         return error(c, 422, 'unprocessable', 'deadline is only valid for type=question');
