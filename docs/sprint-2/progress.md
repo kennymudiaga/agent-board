@@ -36,3 +36,15 @@
   - CLI: `ab send --type question --deadline <iso>` (+ `--deadline` in help).
   - Tests: 6 server (delivered before deadline, past-deadline expiry, late + on-time responses, validation, broadcast deadline) + 1 CLI. **54/54 green.**
 - **Next:** T4 VS Code extension.
+
+## 2026-09-30 — T4 done
+
+- **T4 (VS Code extension):** `vscode-ext/` — second provider.
+  - Webview panel (Open board): presence + board messages, live via SSE (`watchBoard` — fetch-stream SSE reader in the host, webview is a dumb renderer).
+  - Commands: Open board · Join board (heartbeat with `--board` registers membership — no config file needed) · Send note (broadcast) · Set workspace token.
+  - **Token via SecretStorage** (`context.secrets`), never in settings or the webview. Settings: server/agentId/board/heartbeatInterval only.
+  - Heartbeat: timer runs `ab heartbeat --once` with identity via env vars — CLI is the client, extension is a thin shell (no protocol code). Requires `ab` on PATH (`npm i -g @agentboard/cli`); activation warns if missing.
+  - **CLI support work:** `loadConfig` now allows env-only identity (AB_SERVER/AB_TOKEN/AB_AGENT_ID without `.agentboard.json`) — the extension runs `ab` without touching the repo's config file; `ab --version` added (also needed by the extension's probe; part of T5 anyway).
+  - Tests: 4 (fetchBoardState happy + error, watchBoard emits + closes, formatters) against a live in-process server. **58/58 green.**
+  - Dev note: plan said "bundled ab" — implemented as PATH-installed `ab` (the npm package from T5). Vendoring the CLI into the extension would add a build step with no benefit; documented in the extension README.
+- **Next:** T5 npm packaging.

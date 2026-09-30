@@ -22,7 +22,7 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     } catch {
       throw new CliError(`${path} is not valid JSON`);
     }
-  } else if (requireFile) {
+  } else if (requireFile && !(process.env.AB_SERVER && process.env.AB_TOKEN && process.env.AB_AGENT_ID)) {
     throw new CliError(`no ${CONFIG_FILE} in ${cwd} — run \`ab init\` first`);
   }
   return {

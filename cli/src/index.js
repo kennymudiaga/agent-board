@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * ab — AgentBoard CLI client (docs/spec.md v0.1).
+ * ab — AgentBoard CLI client (docs/spec.md v0.2).
  * Subcommands: init, join, heartbeat, send, read, ack.
  * Machine-readable output via --json.
  */
+import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
 import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck } from './commands.js';
+
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const USAGE = `ab — AgentBoard CLI
 
@@ -74,6 +77,10 @@ async function main() {
   const [cmdName, ...rest] = process.argv.slice(2);
   if (!cmdName || cmdName === '--help' || cmdName === '-h') {
     console.log(USAGE);
+    return;
+  }
+  if (cmdName === '--version' || cmdName === '-v') {
+    console.log(`ab ${VERSION}`);
     return;
   }
   const fn = COMMANDS[cmdName];

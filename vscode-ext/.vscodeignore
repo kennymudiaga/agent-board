@@ -1,0 +1,9 @@
+node_modules
+test
+**/*.test.js
+.git
+.github
+docs
+server
+cli
+.vscode
