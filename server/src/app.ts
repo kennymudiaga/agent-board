@@ -260,6 +260,17 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       // Spec §3.1: ttl 0 means no expiry — normalize to NULL.
       ttl = (body.ttl as number) === 0 ? null : (body.ttl as number);
     }
+    // v0.2: questions may carry a deadline (ISO 8601 UTC, server-validated).
+    let deadline: number | null = null;
+    if (body.deadline !== undefined) {
+      if (typeof body.deadline !== 'string' || Number.isNaN(Date.parse(body.deadline))) {
+        return error(c, 422, 'unprocessable', 'deadline must be a valid ISO 8601 date string');
+      }
+      if (type !== 'question') {
+        return error(c, 422, 'unprocessable', 'deadline is only valid for type=question');
+      }
+      deadline = Date.parse(body.deadline as string);
+    }
     let idempotencyKey: string | null = null;
     if (body.idempotencyKey !== undefined) {
       if (typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 1 || body.idempotencyKey.length > 128) {
@@ -286,6 +297,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         payload: body.payload,
         priority: priority as Priority,
         ttl,
+        deadline,
         idempotencyKey,
         replyTo,
       },

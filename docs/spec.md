@@ -48,6 +48,8 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 | `ttl` | integer | no | Seconds from creation after which the message is undeliverable. Absent/`0` = no expiry. Expired messages transition to `expired` (terminal) and are never delivered. |
 | `idempotencyKey` | string | no | Client-generated key for at-most-once creation (§6.3). Unique per sender. |
 | `replyTo` | string | no | Id of the message this one answers. Forms threads. |
+| `deadline` | string | no | **Questions only (v0.2).** ISO 8601 UTC. When `now > deadline` the question is undeliverable: sweep expires it (same terminal state as TTL). Past deadlines are accepted and expire immediately. Rejected (`422`) on any other type. |
+| `late` | boolean | (server) | **Responses only (v0.2).** `true` when the replied-to question had expired (or was past its deadline) at response time. Late responses are accepted — the answer is still recorded. |
 | `state` | string | (server) | `pending` · `claimed` · `done` · `failed` · `dead` · `expired` (§6.1). |
 | `attempts` | integer | (server) | Number of delivery attempts so far (incremented on each claim). |
 | `createdAt` / `updatedAt` | string | (server) | ISO 8601 UTC. |
@@ -65,8 +67,8 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 | Type | Meaning |
 |---|---|
 | `request` | A task; expects a `response` (with `replyTo` set to the request id). |
-| `response` | The answer to a `request`. |
-| `question` | Needs an answer; deadline semantics arrive in a later sprint. |
+| `response` | The answer to a `request` (or a `question`). Carries `late` when the replied-to question expired (§3.1). |
+| `question` | Needs an answer by an optional `deadline` (v0.2). Past the deadline the question expires and is never delivered; late responses are still accepted and flagged `late`. |
 | `note` | Fire-and-forget. |
 | `event` | System/status noise (e.g. an agent joining a board). |
 

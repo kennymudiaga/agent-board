@@ -56,6 +56,7 @@ export interface MessageInput {
   payload: unknown;
   priority: Priority;
   ttl: number | null;
+  deadline: number | null;
   idempotencyKey: string | null;
   replyTo: string | null;
 }
@@ -70,6 +71,10 @@ export interface MessageRecord {
   payload: unknown;
   priority: Priority;
   ttl: number | null;
+  /** Question only (v0.2): ISO 8601 UTC deadline, server-validated. */
+  deadline: string | null;
+  /** Response only (v0.2): true when replying to an expired question. */
+  late: boolean;
   idempotencyKey: string | null;
   replyTo: string | null;
   state: MsgState;
@@ -113,6 +118,8 @@ interface MessageRow {
   payload: string;
   priority: string;
   ttl: number | null;
+  deadline: number | null;
+  late: number;
   idempotency_key: string | null;
   reply_to: string | null;
   state: string;
@@ -166,6 +173,8 @@ CREATE TABLE IF NOT EXISTS messages (
   payload          TEXT NOT NULL,
   priority         TEXT NOT NULL DEFAULT 'normal',
   ttl              INTEGER,
+  deadline         INTEGER,
+  late             INTEGER NOT NULL DEFAULT 0,
   idempotency_key  TEXT,
   reply_to         TEXT,
   state            TEXT NOT NULL DEFAULT 'pending',
@@ -231,6 +240,8 @@ function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveri
     payload: JSON.parse(r.payload),
     priority: r.priority as Priority,
     ttl: r.ttl,
+    deadline: r.deadline !== null && r.deadline !== undefined ? new Date(r.deadline).toISOString() : null,
+    late: r.late === 1,
     idempotencyKey: r.idempotency_key,
     replyTo: r.reply_to,
     state: r.state as MsgState,
@@ -251,10 +262,23 @@ export class Store {
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    // Lightweight migrations for pre-v0.2 databases (CREATE IF NOT EXISTS does
+    // not add columns to existing tables).
+    this.ensureColumn('messages', 'deadline', 'INTEGER');
+    this.ensureColumn('messages', 'late', "INTEGER NOT NULL DEFAULT 0");
   }
 
   close(): void {
     this.db.close();
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    try {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    } catch (e) {
+      // "duplicate column name" — already migrated.
+      if (!(e instanceof Error && e.message.includes('duplicate column name'))) throw e;
+    }
   }
 
   // ------------------------------------------------------------------ boards
@@ -358,19 +382,29 @@ export class Store {
           .get(input.from, input.idempotencyKey) as { id: string } | undefined;
         if (existing) return { duplicate: existing.id };
       }
+      // v0.2: a response to an expired question is accepted and flagged `late`.
+      let late = 0;
+      if (input.replyTo) {
+        const target = this.db
+          .prepare('SELECT type, state, deadline FROM messages WHERE id = ?')
+          .get(input.replyTo) as { type: string; state: string; deadline: number | null } | undefined;
+        if (target && target.type === 'question' && (target.state === 'expired' || (target.deadline !== null && target.deadline < now))) {
+          late = 1;
+        }
+      }
       this.db.prepare('INSERT OR IGNORE INTO boards (name, created_at) VALUES (?, ?)').run(input.board, now);
       const seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages').get() as { seq: number }).seq;
       this.db
         .prepare(
           `INSERT INTO messages
              (id, board, seq, from_agent, to_kind, to_value, type, payload, priority,
-              ttl, idempotency_key, reply_to, state, attempts, claim_agent, lease_expires_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?)`,
+              ttl, deadline, late, idempotency_key, reply_to, state, attempts, claim_agent, lease_expires_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?)`,
         )
         .run(
           id, input.board, seq, input.from, input.toKind, input.toValue, input.type,
-          JSON.stringify(input.payload), input.priority, input.ttl, input.idempotencyKey,
-          input.replyTo, now, now,
+          JSON.stringify(input.payload), input.priority, input.ttl, input.deadline, late,
+          input.idempotencyKey, input.replyTo, now, now,
         );
       // Broadcast fan-out (v0.2): one delivery row per current board member —
       // online or offline; membership is the criterion. Late joiners do not
@@ -636,15 +670,19 @@ export class Store {
            AND state = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
       )
       .run(MAX_ATTEMPTS, now, board, now);
-    // TTL expiry: pending/claimed past ttl -> expired. Applies to whole messages
-    // (broadcasts expire all their readers' deliveries at once).
+    // TTL / deadline expiry: pending/claimed past ttl (or, for questions, past
+    // deadline) -> expired. Applies to whole messages (broadcasts expire all
+    // their readers' deliveries at once).
     const expiredIds = this.db
       .prepare(
         `SELECT id FROM messages
          WHERE board = ? AND state IN ('pending','claimed')
-           AND ttl IS NOT NULL AND ttl > 0 AND (created_at + ttl * 1000) < ?`,
+           AND (
+             (ttl IS NOT NULL AND ttl > 0 AND (created_at + ttl * 1000) < ?)
+             OR (type = 'question' AND deadline IS NOT NULL AND deadline < ?)
+           )`,
       )
-      .all(board, now) as { id: string }[];
+      .all(board, now, now) as { id: string }[];
     if (expiredIds.length > 0) {
       const ids = expiredIds.map((r) => r.id);
       const placeholders = ids.map(() => '?').join(',');

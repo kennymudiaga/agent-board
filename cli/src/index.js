@@ -20,7 +20,8 @@ commands:
              ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--once]
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
-             [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>] [--idempotency-key <key>]
+             [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]
+             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key>]
   read       pickup messages (loop, long-poll)
              ab read --board <name> [--wait <sec>] [--since <cursor>] [--ack claimed|done|failed] [--error <text>] [--once]
   ack        acknowledge a claimed message

@@ -25,3 +25,14 @@
   - Responses: pickup carries `delivery` (mine); observability carries `deliveries` (all).
   - Tests: 9 new server tests (independent receipt online+offline, per-reader retry independence, aggregate transitions, zero-member dead, late joiners, ack conflicts, per-reader lease redelivery, broadcast ttl expiry, watermark semantics) + 1 CLI end-to-end fan-out test (two agents receive + finalize their own copies). **47/47 green.**
 - **Next:** T3 question deadlines.
+
+## 2026-09-30 — T3 done
+
+- **T3 (question deadlines):**
+  - `deadline` on `question` messages (ISO 8601 UTC, server-validated; only questions may carry it → 422 otherwise). Stored as ms; exposed as ISO in the API.
+  - Sweep: `type='question'` pending/claimed past deadline → `expired` (same terminal path as TTL; broadcasts expire all deliveries at once).
+  - Late responses: on insert, a `response` whose `replyTo` targets an expired (or past-deadline) question gets `late: true`; still accepted. Computed at insert time (no sweep dependency).
+  - Lightweight column migration (`ensureColumn`) for pre-v0.2 DBs — `CREATE TABLE IF NOT EXISTS` doesn't add columns.
+  - CLI: `ab send --type question --deadline <iso>` (+ `--deadline` in help).
+  - Tests: 6 server (delivered before deadline, past-deadline expiry, late + on-time responses, validation, broadcast deadline) + 1 CLI. **54/54 green.**
+- **Next:** T4 VS Code extension.

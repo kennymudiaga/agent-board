@@ -135,6 +135,10 @@ export async function cmdSend(flags, json) {
     if (!Number.isInteger(ttl) || ttl < 0) usage('ttl must be a non-negative integer');
     body.ttl = ttl;
   }
+  if (flags.deadline !== undefined) {
+    if (Number.isNaN(Date.parse(flags.deadline))) usage('--deadline must be an ISO 8601 date string');
+    body.deadline = flags.deadline; // questions only; server rejects on other types
+  }
   if (flags.idempotencyKey !== undefined) body.idempotencyKey = flags.idempotencyKey;
   if (flags.replyTo !== undefined) body.replyTo = flags.replyTo;
 

@@ -283,6 +283,35 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('sends questions with deadlines (T3)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+      const deadline = new Date(Date.now() + 120_000).toISOString();
+      const sent = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'question', '--message', 'ship today?', '--deadline', deadline, '--json'],
+        { cwd: dir },
+      );
+      expect(sent.code).toBe(0, sent.stderr);
+      const msg = JSON.parse(sent.stdout);
+      expect(msg.type).toBe('question');
+      expect(msg.deadline).toBe(deadline);
+      expect(msg.late).toBe(false);
+
+      // deadline on a non-question is rejected by the server.
+      const bad = await runCli(
+        ['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'note', '--message', 'nope', '--deadline', deadline],
+        { cwd: dir },
+      );
+      expect(bad.code).not.toBe(0);
+      expect(bad.stderr).toContain('question');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
     const dir = makeWorkspace();
     try {

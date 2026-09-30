@@ -677,4 +677,108 @@ describe('message lifecycle', () => {
       expect(done.watermark).toBe(msg.seq);
     });
   });
+
+  describe('question deadlines (T3)', () => {
+    it('a pending question is delivered before its deadline', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: {
+          to: 'role:qa',
+          type: 'question',
+          payload: { text: 'ship today?' },
+          deadline: new Date(Date.now() + 120_000).toISOString(),
+        },
+      });
+      expect(res.status).toBe(201);
+      const msg = (await res.json()).message;
+      expect(msg.deadline).toBeDefined();
+      expect(msg.late).toBe(false);
+      const mail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+      expect(mail.messages).toHaveLength(1);
+      expect(mail.messages[0].id).toBe(msg.id);
+    });
+
+    it('a question past its deadline expires and is never delivered', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: {
+          to: 'role:qa',
+          type: 'question',
+          payload: { text: 'too late' },
+          deadline: new Date(Date.now() - 1000).toISOString(),
+        },
+      });
+      const msg = (await res.json()).message;
+      const mail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+      expect(mail.messages).toHaveLength(0);
+      const expired = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=expired', { agent: 'qa-1' })).json();
+      expect(expired.messages.some((m: { id: string }) => m.id === msg.id)).toBe(true);
+    });
+
+    it('a response to an expired question is accepted and flagged late', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1', { roles: ['producer'] });
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const q = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'question', payload: { text: 'hurry' }, deadline: new Date(Date.now() - 1000).toISOString() },
+        })
+      ).json();
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'qa-1',
+        body: { to: 'agent:producer-1', type: 'response', payload: { text: 'yes (late, sorry)' }, replyTo: q.message.id },
+      });
+      expect(res.status).toBe(201);
+      const response = (await res.json()).message;
+      expect(response.late).toBe(true);
+      expect(response.replyTo).toBe(q.message.id);
+    });
+
+    it('an on-time response is not flagged late', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1', { roles: ['producer'] });
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      const q = await (
+        await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+          agent: 'producer-1',
+          body: { to: 'role:qa', type: 'question', payload: { text: 'quick one' }, deadline: new Date(Date.now() + 120_000).toISOString() },
+        })
+      ).json();
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'qa-1',
+        body: { to: 'agent:producer-1', type: 'response', payload: { text: 'yes' }, replyTo: q.message.id },
+      });
+      expect((await res.json()).message.late).toBe(false);
+    });
+
+    it('deadline is validated: format and question-only', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'producer-1');
+      const post = (body: unknown) => api(app, 'POST', '/v1/boards/sprint-7/messages', { agent: 'producer-1', body });
+      expect((await post({ to: 'role:qa', type: 'question', payload: {}, deadline: 'not-a-date' })).status).toBe(422);
+      expect((await post({ to: 'role:qa', type: 'question', payload: {}, deadline: 12345 })).status).toBe(422);
+      expect((await post({ to: 'role:qa', type: 'note', payload: {}, deadline: new Date().toISOString() })).status).toBe(422);
+      expect((await post({ to: 'role:qa', type: 'question', payload: {}, deadline: new Date(Date.now() + 60_000).toISOString() })).status).toBe(201);
+    });
+
+    it('a broadcast question expires all deliveries at its deadline', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to: 'broadcast', type: 'question', payload: { text: 'all hands?' }, deadline: new Date(Date.now() - 1000).toISOString() },
+      });
+      const msg = (await res.json()).message as { id: string; deliveries: { state: string }[] };
+      expect(msg.deliveries).toHaveLength(2);
+      const expired = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=expired', { agent: 'qa-1' })).json();
+      const found = expired.messages.find((m: { id: string }) => m.id === msg.id);
+      expect(found.deliveries.every((d: { state: string }) => d.state === 'expired')).toBe(true);
+    });
+  });
 });
