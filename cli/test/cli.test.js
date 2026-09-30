@@ -194,4 +194,56 @@ describe('ab CLI against the reference server', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('rejects invalid board names on join (regression #10)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      const bad = await runCli(['join', '--board', 'BAD BOARD!'], { cwd: dir });
+      expect(bad.code).not.toBe(0);
+      expect(bad.stderr).toContain('invalid board name');
+
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.boards).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('--ack claimed does not advance the cursor; redelivery still arrives (regression #11)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once'], { cwd: dir });
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', 'renewed', '--json'], { cwd: dir });
+      const msg = JSON.parse(sent.stdout);
+
+      // Lease-renew (ack claimed) — NOT finalization.
+      const renew = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'claimed'], { cwd: dir });
+      expect(renew.code).toBe(0, renew.stderr);
+      expect(renew.stdout).toContain(msg.id);
+
+      // Watermark must NOT have advanced past the message.
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.cursors['sprint-7']).toBe(0);
+
+      // Simulate the crash window: lease expires server-side.
+      store.db
+        .prepare('UPDATE messages SET lease_expires_at = ? WHERE id = ?')
+        .run(Date.now() - 1, msg.id);
+
+      // A fresh read (new process, empty seen-set) must see the redelivery.
+      const redelivered = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(redelivered.code).toBe(0, redelivered.stderr);
+      expect(redelivered.stdout).toContain(msg.id);
+      expect(redelivered.stdout).toContain('claimed');
+
+      // Attempt count proves the redelivery was claimed anew.
+      const row = store.db.prepare('SELECT attempts FROM messages WHERE id = ?').get(msg.id);
+      expect(row.attempts).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -74,4 +74,56 @@ describe('dashboard (T6 stretch)', () => {
 
     await reader.cancel();
   }, 10_000);
+
+  it('serves the dashboard REST fetches without X-Agent-ID (regression #8)', async () => {
+    await api(app, 'POST', '/v1/heartbeat', {
+      body: { agentId: 'qa-1', roles: ['qa'], boards: ['sprint-7'], interval: 15 },
+    });
+    await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      agent: 'producer-1',
+      body: { to: 'role:qa', type: 'request', payload: { text: 'review PR #12' } },
+    });
+
+    // Exactly what dashboard.html's refresh() does: Authorization only.
+    const agents = await app.request('/v1/agents', { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(agents.status).toBe(200);
+    expect((await agents.json()).agents).toHaveLength(1);
+
+    const mail = await app.request('/v1/boards/sprint-7/messages', {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(mail.status).toBe(200);
+    const body = await mail.json();
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0].payload).toEqual({ text: 'review PR #12' });
+  });
+
+  it('identity-less reads are read-only: they never claim (regression #8)', async () => {
+    await api(app, 'POST', '/v1/heartbeat', {
+      body: { agentId: 'qa-1', roles: ['qa'], boards: ['sprint-7'], interval: 15 },
+    });
+    const sent = await (
+      await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to: 'role:qa', type: 'request', payload: { text: 'precious' } },
+      })
+    ).json();
+
+    // Dashboard view does not claim: the message stays pending.
+    const view = await (
+      await app.request('/v1/boards/sprint-7/messages', { headers: { authorization: `Bearer ${TOKEN}` } })
+    ).json();
+    expect(view.messages[0].state).toBe('pending');
+    expect(view.messages[0].attempts).toBe(0);
+
+    // A real agent pickup still gets it, fresh with attempts=1.
+    const picked = await (
+      await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })
+    ).json();
+    expect(picked.messages).toHaveLength(1);
+    expect(picked.messages[0].id).toBe(sent.message.id);
+    expect(picked.messages[0].state).toBe('claimed');
+    expect(picked.messages[0].attempts).toBe(1);
+    expect(picked.messages[0].claimAgent).toBe('qa-1');
+  });
 });

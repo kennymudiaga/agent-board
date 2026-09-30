@@ -55,3 +55,18 @@
   - **Acceptance demo executed** against the containerized server: Producer `ab send` → QA long-poll read loop picked up + claimed → ack done → response with `--reply-to` → Producer's read loop printed the response. Zero paste between steps 3–5.
   - Dashboard smoke test: page 200, agents online/busy with currentTask visible.
 - **Next:** handoff — README + PROJECT_BRIEF §7/§8, `done.md`, push, PR.
+
+## 2026-09-30 — QA review → BLOCKED → remediation round
+
+QA sign-off (`docs/qa/sprint-1-signoff.md`) blocked PR #7 on 4 bugs (all reproduced by QA). All fixed, tested, and commented on the issues:
+
+| Issue | Severity | Fix |
+|---|---|---|
+| #8 dashboard REST fetches 401 | major | Read-only GET exemption: identity-less GETs allowed; identity-less messages GET is an observability view (never claims, never long-polls). Spec §4/§5.4 amended. Regression tests: dashboard fetches 200; identity-less reads never claim (agent pickup still gets the message fresh). **Re-verified live.** |
+| #9 `ttl: 0` expires instantly | major | Normalized `0 → NULL` at insert + sweep guard `ttl > 0`. Regression test: ttl:0 aged 1h still delivered, not in `status=expired`. |
+| #11 `read --ack claimed` advances cursor | major | Watermark now advances only on done/failed; `claimed` (lease renewal) keeps cursor behind. End-to-end regression test: lease expiry → redelivery arrives with attempts=2. |
+| #10 invalid board names in heartbeat/join | minor | Heartbeat `boards` validated (422, whole heartbeat rejected); `ab join` validates before writing config. Tests on both sides. |
+
+- Also updated the auth test for the new contract (mutating without identity → 401; malformed identity → 422; GET without identity → 200).
+- **Suite: 32/32 green** (17 lifecycle + 5 dashboard + 8 CLI + 2 new auth/board tests rolled in). Build clean. Live re-check: dashboard fetches return data with `Authorization` only; `ttl: 0` message pending, not expired; pickup after dashboard read still claims (attempts=1).
+- **Next:** re-run CI on the updated branch, then re-submit for QA sign-off.

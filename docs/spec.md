@@ -69,7 +69,8 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 ## 4. Auth & trust
 
 - **All `/v1` endpoints** require `Authorization: Bearer <workspace-token>`. Missing/invalid token → `401`.
-- **All endpoints except `POST /v1/heartbeat`** additionally require the `X-Agent-ID` header declaring the caller's identity. Missing → `401`.
+- **Mutating endpoints** (`POST /v1/boards/{board}/messages`, `POST /v1/messages/{id}/ack`) require the `X-Agent-ID` header declaring the caller's identity. Missing → `401`.
+- **Read-only GETs** (`GET /v1/agents`, `GET /v1/boards/{board}/messages`) may be called **without** an identity — dashboards and observability tools use them this way. An identity-less messages GET is a read-only view: it **never claims or long-polls** (§5.4). Pickup (claiming) requires an identity (via `X-Agent-ID` or the `for` param + identity).
 - The server **trusts** the declared `X-Agent-ID` (no per-agent credentials in v0.1 — matches the MCP trust model; per-agent credentials are an open question for v1).
 - The server never logs tokens or agent headers verbatim beyond operational need.
 
@@ -175,6 +176,7 @@ Query params:
 | `status` | — | **Observability only**: `pending`\|`claimed`\|`done`\|`failed`\|`dead`\|`expired`. When present, returns a read-only view (no claiming, no long-poll) — used by dashboards, not agents. |
 
 Behavior:
+0. **Identity-less requests** (no `X-Agent-ID`, no `for`) are treated as read-only observability: all messages `seq > since` are returned, nothing is claimed, `wait` is ignored. This is the dashboard's data path (§5.6).
 1. Matching **`pending`** messages (per §6.1 matching) are **atomically claimed** and returned. A claim sets `state=claimed`, `claimAgent=for`, `leaseExpiresAt = now + 300s`, and increments `attempts`.
 2. If nothing matches and `wait > 0`, the server holds the request until a matching message arrives or the wait elapses (long-poll, maximum 60s), then returns whatever is available.
 3. If nothing matches and `wait = 0`, returns immediately — a cheap no-op poll.

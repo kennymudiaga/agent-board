@@ -48,10 +48,23 @@ describe('auth', () => {
     expect(await res.json()).toMatchObject({ error: { code: 'unauthorized' } });
   });
 
-  it('rejects missing X-Agent-ID on non-heartbeat endpoints', async () => {
+  it('rejects missing X-Agent-ID on mutating endpoints (GETs are read-only)', async () => {
     const { app } = makeCtx();
-    const res = await api(app, 'GET', '/v1/agents', { headers: { 'x-agent-id': '' } });
+    // POST (mutating) without identity -> 401.
+    const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      headers: {},
+      body: { to: 'role:qa', type: 'note', payload: { text: 'x' } },
+    });
     expect(res.status).toBe(401);
+    // An invalid-format identity header is 422.
+    const badFormat = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      headers: { 'x-agent-id': 'BAD ID!' },
+      body: { to: 'role:qa', type: 'note', payload: { text: 'x' } },
+    });
+    expect(badFormat.status).toBe(422);
+    // GET (read-only) without identity is allowed for dashboards (spec §4).
+    const read = await api(app, 'GET', '/v1/agents', { headers: {} });
+    expect(read.status).toBe(200);
   });
 });
 
@@ -84,6 +97,17 @@ describe('heartbeat & presence', () => {
     expect((await heartbeat(app, 'qa-1', { status: 'asleep' })).status).toBe(422);
     expect((await heartbeat(app, 'qa-1', { interval: 0 })).status).toBe(422);
     expect((await heartbeat(app, 'qa-1', { roles: 'qa' })).status).toBe(422);
+  });
+
+  it('rejects invalid board names in heartbeat boards (regression #10)', async () => {
+    const { app } = makeCtx();
+    const res = await heartbeat(app, 'qa-1', { boards: ['BAD BOARD!'] });
+    expect(res.status).toBe(422);
+    // The whole heartbeat was rejected: no agent registered with a bad board.
+    const dir = await (await api(app, 'GET', '/v1/agents', { agent: 'qa-1' })).json();
+    expect(dir.agents).toHaveLength(0);
+    // A board by that name can never be read or addressed.
+    expect((await api(app, 'GET', '/v1/boards/BAD BOARD!/messages', { agent: 'qa-1' })).status).toBe(422);
   });
 
   it('derives presence: agents go offline after 3x interval', async () => {
@@ -319,6 +343,26 @@ describe('message lifecycle', () => {
 
     const expired = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=expired', { agent: 'qa-1' })).json();
     expect(expired.messages).toHaveLength(1);
+  });
+
+  it('ttl: 0 means no expiry (regression #9)', async () => {
+    const { store, app } = makeCtx();
+    await heartbeat(app, 'qa-1', { roles: ['qa'] });
+    await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      agent: 'producer-1',
+      body: { to: 'role:qa', type: 'note', payload: { text: 'immortal' }, ttl: 0 },
+    });
+
+    // Age the message far beyond any instant-expiry interpretation.
+    store.db.prepare('UPDATE messages SET created_at = ?').run(Date.now() - 3_600_000);
+
+    const mail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+    expect(mail.messages).toHaveLength(1);
+    expect(mail.messages[0].payload).toEqual({ text: 'immortal' });
+    expect(mail.messages[0].ttl).toBeNull();
+
+    const expired = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=expired', { agent: 'qa-1' })).json();
+    expect(expired.messages).toHaveLength(0);
   });
 
   it('rejects ack conflicts: wrong claimer, invalid transitions, missing error', async () => {

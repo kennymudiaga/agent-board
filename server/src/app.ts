@@ -87,10 +87,15 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     // heartbeat declares its identity in the body; the dashboard stream has none.
     if (c.req.path === '/v1/heartbeat' || c.req.path === '/v1/events') return next();
     const agentId = c.req.header('X-Agent-ID');
-    if (!agentId) return error(c, 401, 'unauthorized', 'missing X-Agent-ID header');
-    if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
-    c.set('agentId', agentId);
-    await next();
+    if (agentId !== undefined) {
+      if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
+      c.set('agentId', agentId);
+      return next();
+    }
+    // No identity: read-only GETs are open to dashboards (spec §4 — they never
+    // claim or mutate); anything that mutates requires an identity.
+    if (c.req.method === 'GET') return next();
+    return error(c, 401, 'unauthorized', 'missing X-Agent-ID header');
   });
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
@@ -127,6 +132,9 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     }
     if (body.boards !== undefined && !isStringList(body.boards)) {
       return error(c, 422, 'unprocessable', 'boards must be an array of strings');
+    }
+    if (body.boards !== undefined && (body.boards as string[]).some((b) => !ID_RE.test(b))) {
+      return error(c, 422, 'unprocessable', 'boards must match ^[a-z0-9][a-z0-9._-]{0,63}$');
     }
     if (body.provider !== undefined && typeof body.provider !== 'string') {
       return error(c, 422, 'unprocessable', 'provider must be a string');
@@ -249,7 +257,8 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       if (!Number.isInteger(body.ttl) || (body.ttl as number) < 0) {
         return error(c, 422, 'unprocessable', 'ttl must be a non-negative integer');
       }
-      ttl = body.ttl as number;
+      // Spec §3.1: ttl 0 means no expiry — normalize to NULL.
+      ttl = (body.ttl as number) === 0 ? null : (body.ttl as number);
     }
     let idempotencyKey: string | null = null;
     if (body.idempotencyKey !== undefined) {
@@ -309,8 +318,12 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       if (!/^\d+$/.test(q.wait)) return error(c, 400, 'bad_request', 'wait must be a non-negative integer');
       wait = Math.min(Number(q.wait), MAX_WAIT);
     }
-    const forAgent = q.for ?? c.get('agentId');
-    if (!ID_RE.test(forAgent)) return error(c, 400, 'bad_request', 'invalid for agent id');
+    const callerAgent = c.get('agentId');
+    let forAgent: string | null = null;
+    if (q.for !== undefined) {
+      if (!ID_RE.test(q.for)) return error(c, 400, 'bad_request', 'invalid for agent id');
+      forAgent = q.for;
+    }
     let statusFilter: MsgState | undefined;
     if (q.status !== undefined) {
       if (!MSG_STATES.includes(q.status as MsgState)) {
@@ -319,15 +332,23 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       statusFilter = q.status as MsgState;
     }
 
-    // Observability mode: read-only, no claiming, no long-poll.
+    // No agent identity (dashboard-style read-only): observability view only —
+    // never claims, never long-polls. Pickup mode requires an identity.
+    if (!callerAgent) {
+      const messages = store.listMessages(board, since, statusFilter, Date.now());
+      return c.json({ messages, cursor: messages.length ? messages[messages.length - 1].seq : since }, 200);
+    }
+
+    // Observability mode with identity: read-only, no claiming, no long-poll.
     if (statusFilter) {
       const messages = store.listMessages(board, since, statusFilter, Date.now());
       return c.json({ messages, cursor: messages.length ? messages[messages.length - 1].seq : since }, 200);
     }
 
     // Pickup mode: claim + long-poll.
+    const forId = forAgent ?? callerAgent;
     const now = Date.now();
-    let messages: MessageRecord[] = store.claimMessages(board, forAgent, since, now);
+    let messages: MessageRecord[] = store.claimMessages(board, forId, since, now);
     const deadline = now + wait * 1000;
     while (messages.length === 0 && Date.now() < deadline) {
       await new Promise<void>((resolve) => {
@@ -343,7 +364,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         }
         mailbox.on('message', onMail);
       });
-      messages = store.claimMessages(board, forAgent, since, Date.now());
+      messages = store.claimMessages(board, forId, since, Date.now());
     }
     const cursor = messages.length ? messages[messages.length - 1].seq : since;
     return c.json({ messages, cursor }, 200);

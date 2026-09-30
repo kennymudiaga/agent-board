@@ -433,7 +433,8 @@ export class Store {
       .prepare(
         `UPDATE messages
          SET state = 'expired', claim_agent = NULL, lease_expires_at = NULL, updated_at = ?
-         WHERE board = ? AND state IN ('pending','claimed') AND ttl IS NOT NULL AND (created_at + ttl * 1000) < ?`,
+         WHERE board = ? AND state IN ('pending','claimed') AND ttl IS NOT NULL AND ttl > 0
+           AND (created_at + ttl * 1000) < ?`,
       )
       .run(now, board, now);
   }

@@ -36,8 +36,19 @@
 - `ab` packaging (npm publish / standalone binary) so non-Node agents can use it.
 - CI: add a Docker build job.
 
+## QA remediation (2026-09-30)
+
+QA review (`docs/qa/sprint-1-signoff.md`) initially **BLOCKED** on 4 bugs (issues #8–#11). All fixed, regression-tested, and re-verified on `feature/sprint-1`:
+
+1. **#8 (major)** — dashboard REST fetches 401: read-only GET exemption added (spec §4/§5.4 amended); identity-less messages GET never claims or long-polls. Dashboard fetches re-verified live; dashboard render now works.
+2. **#9 (major)** — `ttl: 0` expired instantly: normalized to `NULL` at insert + `ttl > 0` sweep guard; regression test (aged 1h, still delivered).
+3. **#11 (major)** — `read --ack claimed` advanced the cursor: watermark now advances only on done/failed; end-to-end redelivery regression test (attempts=2 after lease expiry).
+4. **#10 (minor)** — invalid board names accepted: heartbeat `boards` + `ab join` validated against the spec regex.
+
+**Suite after remediation: 32/32 green** (was 26) — 19 lifecycle + 5 dashboard + 8 CLI. Build clean; CI re-run on the branch pending. Ready for QA re-review.
+
 ## Open items for the Producer
 
-- Review `docs/spec.md` §10 open questions (comment on issue #1).
-- Merge PR #8 (regular merge per team workflow) and close issues #1–#6.
-- QA sign-off on the demo before/after merge (demo script in `docs/opencode/quickstart.md` §6).
+- Review `docs/spec.md` §10 open questions (comment on issue #1) and the §4/§5.4 auth amendment from the #8 fix.
+- Merge PR #7 (regular merge per team workflow) and close issues #1–#11.
+- QA sign-off on the demo and the remediation (sign-off doc in `docs/qa/`).

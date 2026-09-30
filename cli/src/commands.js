@@ -48,7 +48,9 @@ export async function cmdJoin(flags, json) {
   if (flags.board === undefined) usage('join requires --board', 'ab join --board sprint-7 [--board feature-x]');
   const cfg = loadConfig();
   const added = [];
+  const BOARD_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
   for (const board of parseList(flags.board)) {
+    if (!BOARD_RE.test(board)) usage(`invalid board name: ${board} (must match ^[a-z0-9][a-z0-9._-]{0,63}$)`);
     if (!cfg.boards.includes(board)) {
       cfg.boards.push(board);
       added.push(board);
@@ -189,7 +191,10 @@ export async function cmdRead(flags, json) {
             agent: cfg.agentId,
             body: { status: ackStatus, error: flags.error ?? null },
           });
-          cursor = Math.max(cursor, m.seq); // finalized -> watermark advances
+          // Watermark rule (spec §6.2): only *finalized* messages advance the
+          // cursor. `claimed` is lease renewal, not finalization — keep the
+          // cursor behind so lease-expiry redelivery is still picked up.
+          if (ackStatus !== 'claimed') cursor = Math.max(cursor, m.seq);
           if (!json) console.log(`[ack] ${m.id} ${ackStatus}`);
         } catch (e) {
           console.error(`[ack] ${m.id} failed: ${e.message}`);
