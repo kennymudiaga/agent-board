@@ -6,7 +6,7 @@ Agents register via heartbeat, drop messages (live or offline) for a specific ag
 
 ## Status
 
-✅ **Sprint 1 complete** (PR #8): protocol spec v0.1, reference server, `ab` CLI, OpenCode integration, CI, read-only dashboard. The loop is proven: two agents in separate sessions collaborate via the board with zero human paste.
+✅ **Sprint 1 complete** (PR #7): protocol spec v0.1, reference server, `ab` CLI, OpenCode integration, CI, read-only dashboard. The loop is proven: two agents in separate sessions collaborate via the board with zero human paste.
 
 ## Docs
 

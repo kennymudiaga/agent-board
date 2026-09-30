@@ -2,7 +2,7 @@
 
 > Handoff from the dev team. Sprint goal: **prove the loop** — two agents in separate sessions collaborate via the board with zero human paste. Achieved.
 
-## What landed (branch `feature/sprint-1`, PR #8)
+## What landed (branch `feature/sprint-1`, PR #7)
 
 | Task | Deliverable | Status |
 |---|---|---|
