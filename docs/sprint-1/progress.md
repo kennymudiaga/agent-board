@@ -42,3 +42,16 @@
   - `docs/opencode/quickstart.md` — install `ab` (npm link), server start (docker/dev), two identities, board loops, two OpenCode sessions (Producer + QA), the Acceptance demo steps, verification commands, troubleshooting table.
 - **T5 (CI):** `.github/workflows/ci.yml` — checkout, node 22, `npm ci`, `npm run build`, `npm test` on PR + push to main. Status check gates merges.
 - **Next:** full verification (build, tests, docker build/run, demo lifecycle end-to-end), then T6 stretch + handoff.
+
+## 2026-09-30 — T6 (stretch) done — full verification complete
+
+- **T6 (dashboard):** T1–T5 landed early and green, so the stretch was picked up.
+  - `GET /` serves a read-only dashboard (embedded HTML/CSS/JS, dark board theme, CSS variables, responsive, no build step): presence dots per agent (online/offline, busy/idle, currentTask), board view with messages, state badges, thread tree via `replyTo`, 10s poll fallback.
+  - `GET /v1/events` SSE stream (spec §5.6, additive): `hello` / `message` / `agent` / `ping` events; token accepted as query param only here (EventSource can't set headers) — route exempted from header-auth middleware, does its own check; read-only.
+  - Dashboard refetches REST state on each event — no message bodies pushed over SSE.
+- **Verification (all green):**
+  - `npm run build` (tsc) clean; **26 vitest tests pass** (17 server lifecycle + 3 dashboard + 6 CLI integration).
+  - **Docker:** `docker build -t agent-board -f server/Dockerfile .` builds; `docker run` boots on :8080 (healthcheck ok); curl full lifecycle against the container: heartbeat → send → pickup (claimed, attempts 1, claimAgent) → ack done → no redelivery.
+  - **Acceptance demo executed** against the containerized server: Producer `ab send` → QA long-poll read loop picked up + claimed → ack done → response with `--reply-to` → Producer's read loop printed the response. Zero paste between steps 3–5.
+  - Dashboard smoke test: page 200, agents online/busy with currentTask visible.
+- **Next:** handoff — README + PROJECT_BRIEF §7/§8, `done.md`, push, PR.

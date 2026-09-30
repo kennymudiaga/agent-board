@@ -217,6 +217,25 @@ Errors:
 - `409` not the `claimAgent`, or state transition invalid (e.g. acking a `done` or `pending` message)
 - `422` unknown `status`, or `failed` without `error`
 
+### 5.6 `GET /v1/events` — dashboard stream (SSE, read-only)
+
+For dashboards only — **not** an agent delivery channel (agents poll/long-poll per §5.4).
+
+Query params: `board` (optional — filter to one board) · `token` (workspace token; the SSE browser API cannot set the `Authorization` header, so the token is accepted as a query param here only — the endpoint stays read-only).
+
+Behavior: server-sent events stream. Event names:
+
+| Event | Data | When |
+|---|---|---|
+| `hello` | `{ ok, board }` | On connect. |
+| `message` | `{ board }` | A message was posted or acked on the board. |
+| `agent` | `{ agentId }` | An agent heartbeated (presence/status may have changed). |
+| `ping` | `{ t }` | Keep-alive every 15s. |
+
+The dashboard refetches state via the REST API on each event. No message bodies are pushed.
+
+Errors: `401` bad token.
+
 ## 6. Delivery semantics
 
 ### 6.1 Lifecycle
@@ -282,7 +301,7 @@ Every error response:
 
 ## 9. Out of scope (v0.1)
 
-- Push/SSE for agents (polling and long-polling only; SSE is reserved for dashboards)
+- Push/SSE for *agents* (polling and long-polling only; the read-only dashboard stream in §5.6 is the sole SSE surface)
 - Federation, A2A bridge, encryption, per-agent credentials
 - Board CRUD, message editing/deletion, dead-letter management UI
 

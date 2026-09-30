@@ -16,6 +16,7 @@ import {
   type MsgType,
   type Priority,
 } from './db.js';
+import { DASHBOARD_HTML } from './dashboard.js';
 
 /**
  * AgentBoard reference server — Hono app implementing `docs/spec.md` v0.1.
@@ -66,12 +67,15 @@ function parseTo(raw: unknown): { kind: 'agent' | 'role' | 'broadcast'; value: s
 export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables: Variables }> {
   const token = opts.token ?? process.env.AB_TOKEN ?? 'dev-token';
   const mailbox = new EventEmitter(); // wakes long-pollers on new messages
+  const agentMailbox = new EventEmitter(); // notifies dashboards of heartbeats
 
   const app = new Hono<{ Variables: Variables }>();
 
   // --- middleware: auth + identity -----------------------------------------
 
   app.use('/v1/*', async (c, next) => {
+    // /v1/events authenticates via query param (SSE cannot set headers) in its own route.
+    if (c.req.path === '/v1/events') return next();
     const auth = c.req.header('Authorization');
     if (auth !== `Bearer ${token}`) {
       return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
@@ -80,7 +84,8 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   });
 
   app.use('/v1/*', async (c, next) => {
-    if (c.req.path === '/v1/heartbeat') return next();
+    // heartbeat declares its identity in the body; the dashboard stream has none.
+    if (c.req.path === '/v1/heartbeat' || c.req.path === '/v1/events') return next();
     const agentId = c.req.header('X-Agent-ID');
     if (!agentId) return error(c, 401, 'unauthorized', 'missing X-Agent-ID header');
     if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
@@ -89,6 +94,9 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   });
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
+
+  // Read-only dashboard (T6 stretch): static shell, no auth (it carries no data).
+  app.get('/', (c) => c.html(DASHBOARD_HTML));
 
   // --- POST /v1/heartbeat ---------------------------------------------------
 
@@ -142,6 +150,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       now,
     );
     const ttl = interval * 3;
+    agentMailbox.emit('agent', agentId);
     return c.json(
       {
         agent,
@@ -149,6 +158,48 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       },
       200,
     );
+  });
+
+  // --- GET /v1/events (SSE dashboard stream, read-only) --------------------
+
+  app.get('/v1/events', (c) => {
+    const q = c.req.query();
+    const streamToken = q.token ?? c.req.header('Authorization')?.replace(/^Bearer\s+/, '');
+    if (streamToken !== token) return error(c, 401, 'unauthorized', 'missing or invalid token');
+    const board = q.board ?? null;
+    if (board !== null && !ID_RE.test(board)) return error(c, 400, 'bad_request', 'invalid board');
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (event: string, data: unknown) => {
+          controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        };
+        send('hello', { ok: true, board });
+        const onMsg = (b: string) => {
+          if (board === null || b === board) send('message', { board: b });
+        };
+        const onUpdated = (b: string) => {
+          if (board === null || b === board) send('message', { board: b });
+        };
+        const onAgent = (agentId: string) => send('agent', { agentId });
+        mailbox.on('message', onMsg);
+        mailbox.on('updated', onUpdated);
+        agentMailbox.on('agent', onAgent);
+        const ping = setInterval(() => send('ping', { t: Date.now() }), 15_000);
+        c.req.raw.signal.addEventListener('abort', () => {
+          mailbox.off('message', onMsg);
+          mailbox.off('updated', onUpdated);
+          agentMailbox.off('agent', onAgent);
+          clearInterval(ping);
+          controller.close();
+        });
+      },
+    });
+    return c.body(stream, 200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
   });
 
   // --- GET /v1/agents -------------------------------------------------------
@@ -331,6 +382,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
           : `message is not in claimed state (cannot ack with ${status})`;
       return error(c, 409, 'ack_conflict', message);
     }
+    mailbox.emit('updated', result.message.board);
     return c.json({ message: result.message }, 200);
   });
 
