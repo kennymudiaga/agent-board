@@ -12,3 +12,16 @@
   - CLI `cmdRead` persists `data.watermark`; falls back to old behavior if absent (older server).
   - Tests: 4 server watermark tests (blocking semantics, role race, not-my-mail, finalization advances) + CLI end-to-end #12 regression (claim msg_5 → crash → msg_6 arrives and is finalized → lease expiry → msg_5 redelivered, attempts=2). **37/37 green.**
 - **Next:** T2 broadcast fan-out (deliveries table).
+
+## 2026-09-30 — T2 done
+
+- **T2 (broadcast fan-out):**
+  - New `deliveries` table `(message_id, reader_id, state, claim_agent, lease_expires_at, attempts, ...)` — per-reader copies.
+  - On broadcast post: delivery rows for **all current board members** (online or offline; sender included; membership is the criterion). **Zero members → message dead-lettered immediately** (documented in spec — a broadcast nobody subscribes to can never be delivered). Late joiners get nothing (spec §3.2).
+  - Pickup claims the caller's **delivery** row (not the message row) for broadcasts; ack operates on the delivery (claim-agent gated); retries/leases/attempts are per-reader independent (max 3 each).
+  - Message row state = aggregate: `pending` while any delivery active → `done` when all terminal (any done wins) → `dead` (all failed) → `expired` (all expired); recomputed on every delivery change + sweep.
+  - Sweep: delivery-level lease expiry (per-reader) + broadcast ttl expiry expires all deliveries at once.
+  - Watermark: broadcast clause now uses the reader's own delivery state (my pending/claimed delivery blocks; another reader's never does).
+  - Responses: pickup carries `delivery` (mine); observability carries `deliveries` (all).
+  - Tests: 9 new server tests (independent receipt online+offline, per-reader retry independence, aggregate transitions, zero-member dead, late joiners, ack conflicts, per-reader lease redelivery, broadcast ttl expiry, watermark semantics) + 1 CLI end-to-end fan-out test (two agents receive + finalize their own copies). **47/47 green.**
+- **Next:** T3 question deadlines.

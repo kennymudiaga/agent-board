@@ -247,6 +247,42 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('broadcast fan-out: two agents each receive and finalize their own copy (T2)', async () => {
+    const aDir = makeWorkspace();
+    const bDir = makeWorkspace();
+    try {
+      for (const [dir, agentId, roles] of [[aDir, 'cli-agent', 'qa,dev'], [bDir, 'qa-1', 'qa']]) {
+        await runCli(['init', '--agent-id', agentId, '--roles', roles], { cwd: dir });
+        await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+        await runCli(['heartbeat', '--once'], { cwd: dir });
+      }
+
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'broadcast', '--type', 'note', '--message', 'standup: statuses please', '--json'], { cwd: aDir });
+      expect(sent.code).toBe(0, sent.stderr);
+      const msg = JSON.parse(sent.stdout);
+      expect(msg.deliveries.map((d) => d.readerId).sort()).toEqual(['cli-agent', 'qa-1']);
+
+      // Both readers see the broadcast and ack their own copies.
+      for (const dir of [aDir, bDir]) {
+        const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--ack', 'done'], { cwd: dir });
+        expect(read.code).toBe(0, read.stderr);
+        expect(read.stdout).toContain(msg.id);
+        expect(read.stdout).toContain('[ack]');
+      }
+
+      // Both deliveries terminal -> aggregate done.
+      const view = await (
+        await fetch(`${baseUrl}/v1/boards/sprint-7/messages?status=done`, {
+          headers: { authorization: `Bearer ${TOKEN}`, 'x-agent-id': 'qa-1' },
+        })
+      ).json();
+      expect(view.messages.some((m) => m.id === msg.id)).toBe(true);
+    } finally {
+      rmSync(aDir, { recursive: true, force: true });
+      rmSync(bDir, { recursive: true, force: true });
+    }
+  });
+
   it('true watermark: mixed ack statuses across runs never skip redelivery (T1, #12)', async () => {
     const dir = makeWorkspace();
     try {

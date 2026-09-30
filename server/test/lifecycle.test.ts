@@ -202,7 +202,7 @@ describe('message lifecycle', () => {
     expect(other.status).toBe(201);
   });
 
-  it('addresses by agent, role, and broadcast', async () => {
+  it('addresses by agent, role, and broadcast (fan-out to all members)', async () => {
     const { app } = makeCtx();
     await heartbeat(app, 'qa-1', { roles: ['qa'] });
     await heartbeat(app, 'dev-1', { roles: ['dev'] });
@@ -222,10 +222,15 @@ describe('message lifecycle', () => {
 
     const qaMail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
     expect(qaMail.messages.map((m: { payload: { text: string } }) => m.payload.text).sort()).toEqual(['all', 'direct', 'role']);
+    // qa-1's broadcast copy carries its own delivery record.
+    const bcast = qaMail.messages.find((m: { to: string }) => m.to === 'broadcast');
+    expect(bcast.delivery).toMatchObject({ readerId: 'qa-1', state: 'claimed', attempts: 1, claimAgent: 'qa-1' });
 
-    // dev-1 only gets the broadcast (first claimer wins).
+    // dev-1 gets its own broadcast copy too (per-reader fan-out).
     const devMail = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'dev-1' })).json();
-    expect(devMail.messages).toHaveLength(0);
+    expect(devMail.messages.map((m: { payload: { text: string } }) => m.payload.text)).toEqual(['all']);
+    expect(devMail.messages[0].delivery).toMatchObject({ readerId: 'dev-1', state: 'claimed' });
+    expect(devMail.messages[0].id).toBe(bcast.id); // same message, own copy
   });
 
   it('retries failed messages and dead-letters after max attempts', async () => {
@@ -505,6 +510,171 @@ describe('message lifecycle', () => {
       const view = await pickup(app, 'qa-1');
       expect(view.messages).toHaveLength(0);
       expect(view.watermark).toBe(2); // passes messages that are not qa-1's mail
+    });
+  });
+
+  describe('broadcast fan-out (T2)', () => {
+    async function broadcast(app: ReturnType<typeof createApp>, text: string) {
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to: 'broadcast', type: 'note', payload: { text } },
+      });
+      expect(res.status).toBe(201);
+      return (await res.json()).message as { id: string; seq: number; deliveries: { readerId: string }[] };
+    }
+    async function pickup(app: ReturnType<typeof createApp>, agent: string) {
+      return (await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent })).json()) as {
+        messages: { id: string; delivery?: { state: string; attempts: number; readerId: string } }[];
+      };
+    }
+
+    it('reaches every member independently, online or offline', async () => {
+      const { store, app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      // dev-1 heartbeated once (long ago — presence gone) but remains a member.
+      await heartbeat(app, 'dev-1', { roles: ['dev'] });
+      store.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?').run(Date.now() - 3_600_000, 'dev-1');
+      const msg = await broadcast(app, 'standup: statuses please');
+
+      // Fan-out rows exist for both members regardless of presence.
+      expect(msg.deliveries.map((d) => d.readerId).sort()).toEqual(['dev-1', 'qa-1']);
+
+      const qa = await pickup(app, 'qa-1');
+      expect(qa.messages.map((m) => m.id)).toContain(msg.id);
+      const dev = await pickup(app, 'dev-1'); // offline member still receives
+      expect(dev.messages.map((m) => m.id)).toContain(msg.id);
+    });
+
+    it('one reader failing to dead does not affect another reader\'s copy', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const msg = await broadcast(app, 'flaky broadcast');
+
+      // qa-1 fails its copy three times -> its delivery dead-letters.
+      for (let i = 0; i < 3; i++) {
+        const mail = await pickup(app, 'qa-1');
+        const mine = mail.messages.find((m) => m.id === msg.id);
+        expect(mine).toBeDefined();
+        const ack = await api(app, 'POST', `/v1/messages/${msg.id}/ack`, {
+          agent: 'qa-1',
+          body: { status: 'failed', error: `attempt ${i + 1}` },
+        });
+        expect(ack.status).toBe(200);
+        const state = (await ack.json()).message.delivery.state;
+        expect(state).toBe(i < 2 ? 'pending' : 'dead');
+      }
+
+      // qa-2 still gets its own fresh copy (attempts=1, unaffected).
+      const mail2 = await pickup(app, 'qa-2');
+      const mine2 = mail2.messages.find((m) => m.id === msg.id);
+      expect(mine2).toBeDefined();
+      expect(mine2.delivery).toMatchObject({ state: 'claimed', attempts: 1, readerId: 'qa-2' });
+      const ack2 = await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-2', body: { status: 'done' } });
+      expect((await ack2.json()).message.delivery.state).toBe('done');
+    });
+
+    it('aggregates: pending while any delivery active, done when all terminal', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const msg = await broadcast(app, 'aggregate');
+
+      const viewPending = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=pending', { agent: 'qa-1' })).json();
+      expect(viewPending.messages.some((m: { id: string }) => m.id === msg.id)).toBe(true);
+
+      // qa-1 done, qa-2 still pending -> message stays pending.
+      await pickup(app, 'qa-1');
+      await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+      await pickup(app, 'qa-2');
+      let view = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=done', { agent: 'qa-1' })).json();
+      expect(view.messages.some((m: { id: string }) => m.id === msg.id)).toBe(false);
+
+      // qa-2 done -> all terminal -> aggregate done.
+      await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-2', body: { status: 'done' } });
+      view = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=done', { agent: 'qa-1' })).json();
+      expect(view.messages.some((m: { id: string }) => m.id === msg.id)).toBe(true);
+    });
+
+    it('a broadcast with no members is dead-lettered immediately', async () => {
+      const { app } = makeCtx();
+      const msg = await broadcast(app, 'nobody home');
+      const view = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=dead', { agent: 'qa-1' })).json();
+      expect(view.messages.some((m: { id: string }) => m.id === msg.id)).toBe(true);
+    });
+
+    it('late joiners do not receive past broadcasts', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await broadcast(app, 'before you joined');
+      await heartbeat(app, 'dev-1', { roles: ['dev'] }); // joins after the broadcast
+      const dev = await pickup(app, 'dev-1');
+      expect(dev.messages).toHaveLength(0);
+    });
+
+    it('ack conflicts: only the claiming reader can ack its own delivery', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const msg = await broadcast(app, 'conflict');
+      await pickup(app, 'qa-1');
+      // qa-2 cannot ack qa-1's delivery.
+      const wrong = await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-2', body: { status: 'done' } });
+      expect(wrong.status).toBe(409);
+      // qa-1 acks its own; second ack is an invalid transition.
+      expect((await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-1', body: { status: 'done' } })).status).toBe(200);
+      expect((await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-1', body: { status: 'done' } })).status).toBe(409);
+    });
+
+    it('delivery leases expire independently and redeliver to the same reader', async () => {
+      const { store, app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const msg = await broadcast(app, 'lease');
+      const mail = await pickup(app, 'qa-1');
+      expect(mail.messages.find((m) => m.id === msg.id)?.delivery).toMatchObject({ attempts: 1 });
+
+      store.db
+        .prepare('UPDATE deliveries SET lease_expires_at = ? WHERE message_id = ? AND reader_id = ?')
+        .run(Date.now() - 1, msg.id, 'qa-1');
+
+      const redelivered = await pickup(app, 'qa-1');
+      expect(redelivered.messages.find((m) => m.id === msg.id)?.delivery).toMatchObject({ attempts: 2, claimAgent: 'qa-1' });
+    });
+
+    it('broadcast ttl expiry expires every reader\'s delivery', async () => {
+      const { store, app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+        agent: 'producer-1',
+        body: { to: 'broadcast', type: 'note', payload: { text: 'perishable' }, ttl: 60 },
+      });
+      const msg = (await res.json()).message as { id: string };
+      store.db.prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(Date.now() - 120_000, msg.id);
+
+      const mail = await pickup(app, 'qa-1');
+      expect(mail.messages).toHaveLength(0);
+      const expired = await (await api(app, 'GET', '/v1/boards/sprint-7/messages?status=expired', { agent: 'qa-1' })).json();
+      const found = expired.messages.find((m: { id: string }) => m.id === msg.id);
+      expect(found).toBeDefined();
+      expect(found.deliveries).toHaveLength(2);
+      expect(found.deliveries.every((d: { state: string }) => d.state === 'expired')).toBe(true);
+    });
+
+    it('my pending broadcast delivery blocks my watermark; another reader\'s does not', async () => {
+      const { app } = makeCtx();
+      await heartbeat(app, 'qa-1', { roles: ['qa'] });
+      await heartbeat(app, 'qa-2', { roles: ['qa'] });
+      const msg = await broadcast(app, 'wm');
+      // qa-1 claims its copy; qa-2 leaves its copy pending.
+      await pickup(app, 'qa-1');
+      const view = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-2' })).json();
+      // qa-2's own pending delivery blocks its watermark; qa-1's claim does not.
+      expect(view.watermark).toBe(msg.seq - 1);
+      await api(app, 'POST', `/v1/messages/${msg.id}/ack`, { agent: 'qa-2', body: { status: 'done' } });
+      const done = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-2' })).json();
+      expect(done.watermark).toBe(msg.seq);
     });
   });
 });
