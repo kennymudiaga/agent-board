@@ -109,8 +109,8 @@ published, clean-machine verify passes, path documented in `docs/releasing.md`.
   PRs via the board; humans only watch.
 
 **Done when:** sprint-3 coordination messages live on the board; failures and
-responses flow without human paste (evidence in `docs/sprint-3/progress.md`).
-
+responses flow without human paste (evidence in `docs/sprint-3/progress.md`).
+
 ### T8 — npm v12 install-script allowlist — MEDIUM
 
 npm v12 (now `latest`) defaults `allowScripts` off — `better-sqlite3`'s
