@@ -50,3 +50,14 @@
   - Spec §4 rewritten + §5.9 added; **v0.2.1**.
   - Tests: 3 server (mint/use/impersonation 401/revoke; provisioning; validation) + 1 CLI end-to-end (mint → act as qa-1 → impostor 401 → no mint with agent token → revoke → dead). **86/86 green.**
 - **Next:** T7 dogfooding (bootstrap board + dev-1 identity), then stretch A2A spike + handoff.
+
+## 2026-09-30 — T7 + stretch + final verification
+
+- **T7 (dogfood) — evidence recorded:**
+  - No shared board existed in this environment, so we bootstrapped (as flagged): local server (`AB_TOKEN=dogfood-token`, persistent DB, **left running** on :8080 — Producer's session can join), `dev-1` identity via `ab init`/`join`/`whoami` (new `ab whoami` command added — AGENTS.md + demo reference it), heartbeat busy, board `sprint-3`.
+  - Board evidence (visible via identity-less observability): **3 coordination notes** `dev-1 → role:producer` (T1–T6 done, 86 tests, A2A spike next, then PR); `dev-1 [online] busy — implementing sprint 3` in the directory; `GET /v1/boards` lists `sprint-3`.
+  - Dogfooding caught a doc/code mismatch: the board-producer persona uses `ab send --key <task-key>` but the CLI flag is `--idempotency-key` → added **`--key` alias**.
+  - `.agentboard.json` gitignored (tokens never in PRs — conventions §6).
+- **Stretch (A2A bridge spike):** `docs/a2a-spike.md` — feasibility writeup: A2A needs addressable always-on agents; board agents are transient, so the bridge must be a **relay on the reference server** (Agent Card + `/a2a/:agentId`, `tasks/send|get|cancel` mapping to board threads, agent-token auth). Recommended as a real sprint-4 task; findings only, no code (per plan).
+- **Final verification:** build clean; **86/86 vitest green** (was 81) + **4/4 extension host-wiring UI tests** (ran locally; CI `extension-ui` job added).
+- **Next:** handoff — done.md, PROJECT_BRIEF §7/§8, README, push, PR (#27–#35).

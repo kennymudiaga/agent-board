@@ -145,6 +145,7 @@ export async function cmdSend(flags, json) {
     body.deadline = flags.deadline; // questions only; server rejects on other types
   }
   if (flags.idempotencyKey !== undefined) body.idempotencyKey = flags.idempotencyKey;
+  if (flags.key !== undefined) body.idempotencyKey = flags.key; // --key alias (conventions/persona)
   if (flags.replyTo !== undefined) body.replyTo = flags.replyTo;
 
   const data = await apiCall(cfg, 'POST', `/v1/boards/${board}/messages`, { agent: cfg.agentId, body });

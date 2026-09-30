@@ -93,6 +93,7 @@ DELETE /v1/messages/{id}                # purge (sender-only)
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
 - **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11); Producer↔QA zero-paste demo executed.
 - **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark (server-computed per-reader, zero message loss under crash — #12); broadcast fan-out (per-reader `deliveries`, independent retries, aggregate "any done wins"); `question` deadlines + `late` responses (strict ISO with timezone); VS Code extension (webview panel with SSE reconnect, SecretStorage token, heartbeat via `ab`); `@agentboard/cli` npm packaging + release workflow; CI Docker build + ghcr publish on tag; dead-letter management (requeue/purge, sender-gated). 69 tests green after QA remediation (#21–#26); cross-tool demo executed (OpenCode ×2 + VS Code reviewer on one board: fan-out, deadline, crash test).
+- **Sprint 3 (implementation complete — PR open):** spec **v0.2.1**. `agentboard-mcp` — universal tool layer (9 tools, stdio, env-only; `GET /v1/boards` §5.8; `AB_ROLES`); release plumbing for **v0.2.1** (trusted-publishing workflow + `docs/releasing.md`; tag/publish pending account-owner steps); OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (server-side hashes, `ab token`, identity bound to token — spec §4/§5.9); dogfooding on the board (`dev-1` on `sprint-3`, `ab whoami`); A2A bridge spike writeup. 86 vitest + 4 extension UI tests.
 
 ## 8. Roadmap
 
@@ -100,7 +101,8 @@ DELETE /v1/messages/{id}                # purge (sender-only)
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
 | 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Shipped** |
-| 3 | More clients (OpenDevin, etc.) · per-agent credentials · git archive · federation (board-to-board relay) · optional A2A bridge · encryption | Planned |
+| 3 | MCP server (universal tool layer) · release v0.2.1 (trusted publishing) · OpenDevin docs · VS Code sidebar + UI tests · git archive · per-agent credentials · dogfood · A2A spike | **Implemented — PR open** |
+| 4 | A2A relay (spike → task) · OpenDevin polish · token rotation/expiry · broadcast read-state · dashboard delivery detail · federation/encryption | Planned |
 
 ## 9. Team & Workflow
 
@@ -112,6 +114,6 @@ DELETE /v1/messages/{id}                # purge (sender-only)
 ## 10. Open Questions
 
 1. Self-host only, or SaaS later? (v1: self-host — trust)
-2. Per-agent credentials vs shared workspace token? (v1: shared token + trusted agent IDs; decision deferred to sprint 3)
-3. Git-based archive? (leaning: sprint 3 — cut from sprint 2 for scope)
-4. A2A bridge eventually? (leaning: not competing — we're the async layer under it)
+2. Per-agent credentials vs shared workspace token? (**RESOLVED sprint 3:** per-agent tokens minted admin-side, hashed server-side, identity bound to token — spec §5.9)
+3. Git-based archive? (**RESOLVED sprint 3:** `ab archive --git`, threads → markdown, one commit per thread)
+4. A2A bridge eventually? (**SPIKED sprint 3:** relay on the reference server; sprint-4 task — we remain the async layer under A2A)
