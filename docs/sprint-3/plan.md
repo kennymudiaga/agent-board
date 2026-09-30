@@ -15,6 +15,7 @@
 - T5: Git archive — `ab archive --board <b> --git` (MEDIUM)
 - T6: Per-agent credentials (MEDIUM — decide then implement; brief §10.2)
 - T7: Dogfood sprint 3 on the board (MEDIUM — our own sessions coordinate via AgentBoard)
+- T8: npm v12 install-script allowlist (better-sqlite3) + CI/Docker verification (MEDIUM)
 - Stretch: A2A bridge spike (expose a board agent as an A2A endpoint)
 
 **Out (explicitly cut):** federation, encryption, broadcast read-state
@@ -42,15 +43,33 @@ MCP tools; CI green; `docs/mcp.md` covers four platforms.
 
 ### T2 — Release v0.2.0 — HIGH
 
-- Add `NPM_TOKEN` secret (repo settings) so the release workflow can publish.
-- Tag `v0.2.0` → release workflow: build + test, `npm publish
-  @agentboard/cli`, ghcr push (`ghcr.io/kennymudiaga/agent-board:v0.2.0` +
-  `:latest`), GitHub Release with notes.
+Publishing must use a non-deprecated path. npm supports **only Granular
+Access Tokens** since Nov 2025 (classic tokens removed), and direct publishing
+with bypass-2FA GATs is **removed January 2027**. Preferred: **trusted
+publishing (OIDC)** — no token at all.
+
+- **Primary: trusted publishing.** Account owner configures the npm-side
+  trusted publisher for `@agentboard/cli` bound to `kennymudiaga/agent-board`
+  (GitHub Actions; restrict to the release workflow / tag refs if supported).
+  Workflow changes: add `permissions: { id-token: write }`, drop
+  `NODE_AUTH_TOKEN`, publish with `--provenance`.
+- **Fallback (if trusted publishing is not yet available on the account):**
+  Granular Access Token scoped to `@agentboard/cli`:
+  - *Today:* **Read and write (publish and stage)** + **Bypass 2FA** — fully
+    unattended; but direct publish dies January 2027, so pair it with a
+    migration task.
+  - *Deprecation-safe:* **stage only** GAT + `npm stage publish` → human 2FA
+    approval (`npm stage approve`) per release. Fine at our cadence; no
+    long-lived direct-publish token ever exists.
+- Document the chosen path in `docs/releasing.md`.
+- Tag `v0.2.0` → release workflow: build + test, publish (path above), ghcr
+  push (`ghcr.io/kennymudiaga/agent-board:v0.2.0` + `:latest`), GitHub
+  Release with notes.
 - Verify on a clean machine: `npm i -g @agentboard/cli && ab --version`;
   `docker pull ghcr.io/kennymudiaga/agent-board:v0.2.0`.
 
-**Done when:** package and image public, release notes published, clean-machine
-verify passes.
+**Done when:** package and image public via the chosen path, release notes
+published, clean-machine verify passes, path documented in `docs/releasing.md`.
 
 ### T3 — OpenDevin integration docs — MEDIUM
 
@@ -90,7 +109,21 @@ verify passes.
   PRs via the board; humans only watch.
 
 **Done when:** sprint-3 coordination messages live on the board; failures and
-responses flow without human paste (evidence in `docs/sprint-3/progress.md`).
+responses flow without human paste (evidence in `docs/sprint-3/progress.md`).
+
+### T8 — npm v12 install-script allowlist — MEDIUM
+
+npm v12 (now `latest`) defaults `allowScripts` off — `better-sqlite3`'s
+install script (prebuild-install) no longer runs on `npm ci`, silently
+breaking the native module. Fix before runners move to npm v12:
+
+- Run `npm approve-scripts --allow-scripts-pending` in `server/`, commit the
+  resulting allowlist (package.json), and verify `npm ci` + build + tests.
+- Verify the Docker build (node:22 image) still boots with the allowlist.
+- Consumers of `@agentboard/cli` are unaffected — the CLI is zero-dependency
+  (no lifecycle scripts).
+
+**Done when:** clean `npm ci` + tests under npm v12 defaults; Docker job green.
 
 ## Acceptance: The Equipping Demo
 
@@ -106,7 +139,7 @@ responses flow without human paste (evidence in `docs/sprint-3/progress.md`).
 
 ## Definition of Done (sprint)
 
-All HIGH tasks merged with passing CI; T3–T7 merged; demo executed; QA
+All HIGH tasks merged with passing CI; T3–T8 merged; demo executed; QA
 sign-off (`docs/qa/`); `docs/sprint-3/done.md`; `PROJECT_BRIEF.md` §7/§8
 updated; issues closed.
 
@@ -120,8 +153,8 @@ updated; issues closed.
 > `.opencode/agent/board-producer.md`, `docs/conventions.md`) first — they are
 > the client story this sprint serves. Work in order T1→T7 (stretch last). T1
 > (MCP server) is the top priority: structured tools, stdio transport, env-only
-> config, mount docs for four platforms. T2 needs the NPM_TOKEN secret — flag
-> to the Producer the moment you need it. T6 (per-agent credentials) is a
+> config, mount docs for four platforms. T2 publishes via trusted publishing (OIDC) — the account owner does the npm-side setup; flag
+> to the Producer what is needed. T8 (npm v12 allowlist) is a CI-health prerequisite — do it early. T6 (per-agent credentials) is a
 > decision task: propose the model on the issue before coding. Each task:
 > branch off `main`, PR with passing CI, reference its issue number. Report
 > progress to `docs/sprint-3/progress.md` — and if T7 is live, report through
