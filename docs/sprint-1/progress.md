@@ -34,3 +34,11 @@
 - **Bug caught by tests:** read loop initially advanced the persisted cursor to the server's max-seq, which would skip lease-expiry redeliveries (breaking at-least-once). Fixed: cursor only advances past *finalized* (acked) messages; in-process dedupe by id. Spec §6.2 updated with the "client watermark rule".
 - **6 CLI integration tests green** (`cli/test/cli.test.js`) — real server on an ephemeral port, CLI driven as subprocess: init config, auth failures, full lifecycle (heartbeat → send → read → ack done → no redelivery), idempotency 409 via CLI, failed→retry→dead, auto-ack + ack conflict, validation errors. **Total: 23 tests green.**
 - **Next:** T4 OpenCode integration.
+
+## 2026-09-30 — T4 + T5 done
+
+- **T4 (OpenCode integration):**
+  - `.opencode/agent/board.md` — `board` agent (mode primary, bash allowed): mailbox discipline persona — heartbeat per loop, `ab read --once --json` mail check, pickup-is-claim, ack done/failed/claimed(renew), reply with `--type response --reply-to`, never ack what isn't yours. Agent file format validated against the opencode config schema (skill).
+  - `docs/opencode/quickstart.md` — install `ab` (npm link), server start (docker/dev), two identities, board loops, two OpenCode sessions (Producer + QA), the Acceptance demo steps, verification commands, troubleshooting table.
+- **T5 (CI):** `.github/workflows/ci.yml` — checkout, node 22, `npm ci`, `npm run build`, `npm test` on PR + push to main. Status check gates merges.
+- **Next:** full verification (build, tests, docker build/run, demo lifecycle end-to-end), then T6 stretch + handoff.
