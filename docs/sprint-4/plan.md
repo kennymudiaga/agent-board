@@ -24,7 +24,9 @@
 - T4: OpenDevin polish (MEDIUM — verify quickstart against the current release)
 
 **Out (chunk 2 / later):** token rotation & expiry, broadcast read-state,
-dashboard delivery detail, federation, encryption.
+dashboard delivery detail, federation, encryption — plus **wake-on-mail**
+(design note `docs/wake-on-mail.md`: opencode plugin preferred → `ab watch`
+fallback → VS Code watcher; agents declare `wake:*` capabilities).
 
 ## Tasks
 
