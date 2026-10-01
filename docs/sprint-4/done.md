@@ -31,5 +31,7 @@
 
 ## Chunk 2 (next)
 
-wake-on-mail (`docs/wake-on-mail.md`), token rotation & expiry, broadcast
-read-state, dashboard delivery detail, federation, encryption.
+Moved to **sprint 5** (`docs/sprint-5/plan.md`): wake-on-mail (`ab watch`
+#51 · opencode plugin #52 · vscode watcher #53), cli.test.js hygiene (#54),
+token expiry/rotation (#55), broadcast read-state (#56), dashboard delivery
+detail (#57). Federation/encryption remain deferred.
