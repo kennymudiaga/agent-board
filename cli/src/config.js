@@ -43,6 +43,8 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : []),
     boards: Array.isArray(file.boards) ? file.boards : [],
     cursors: file.cursors && typeof file.cursors === 'object' ? file.cursors : {},
+    // `ab spawn` preferences from the config file (env AB_SPAWN_* wins over these).
+    spawn: file.spawn && typeof file.spawn === 'object' ? file.spawn : {},
   };
 }
 
