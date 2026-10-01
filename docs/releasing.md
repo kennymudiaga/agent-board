@@ -20,10 +20,19 @@ Tag `v0.2.1` (e.g. `git tag v0.2.1 && git push origin v0.2.1`) triggers
    `ghcr.io/kennymudiaga/agent-board:<tag>` + `:latest`.
 3. `github-release` — GitHub Release with auto-generated notes.
 
-## Trusted publishing (chosen path)
+## Trusted publishing (chosen path — after first publish)
 
 npm has removed classic tokens; direct publish with bypass-2FA GATs dies
-January 2027. We publish with **no token at all**:
+January 2027. **Trusted publishing (OIDC) is the long-term path** — no token
+at all — but npm requires the package to already exist on the registry before
+a trusted publisher can be bound. So:
+
+- **First publish (v0.2.1): stage-only GAT** (below) creates `@agentboard/cli`
+  on the registry.
+- **Then:** bind the trusted publisher (below) and switch the workflow back to
+  OIDC (`id-token: write`, no token, `npm publish --provenance`).
+
+### Binding the trusted publisher (after first publish)
 
 1. Go to npmjs.com → account → **Access → Trusted Publishers → Add publisher**.
 2. Configure:
@@ -32,18 +41,21 @@ January 2027. We publish with **no token at all**:
    - **Owner:** `kennymudiaga`
    - **Repository:** `agent-board`
    - **Workflow:** `release.yml` (restricts publishing to the release workflow)
-   - **Environments:** leave empty (or `release` if you create one)
-3. That's it — the workflow's `permissions: { id-token: write }` + `npm
-   publish --provenance` does the rest. No secrets needed.
+   - **Environments:** `release`
+3. Switch `release.yml`'s npm job to OIDC: drop `NODE_AUTH_TOKEN`, add
+   `permissions: { id-token: write }`, publish with `--provenance`.
 
-### Fallback (if trusted publishing is unavailable)
+### Stage-only GAT (first publish, current)
 
-A **stage-only Granular Access Token** (scope: `@agentboard/cli`, "Read and
-write (stage and publish)" is NOT allowed — choose **stage only**):
+A **stage-only Granular Access Token** (scope: `@agentboard/cli`, "stage only" —
+never direct publish):
 
-1. `npm stage publish --workspace cli` (workflow change) → package staged.
-2. A human approves with 2FA: `npm stage approve` (or npmjs.com UI).
-3. `npm stage promote` or leave staged; the release notes link it.
+1. Create the GAT on npmjs.com → install as repo secret `NPM_TOKEN` in a
+   `release` **environment** (Settings → Environments → release → secrets).
+2. The workflow's npm job already runs with `environment: release` and
+   `npm stage publish` — the package lands **staged**.
+3. A human approves with 2FA: `npm stage approve` (or the npmjs.com UI).
+4. `npm stage promote` (or the UI) makes it live.
 
 This keeps a human in the loop per release and never creates a long-lived
 direct-publish token.
@@ -59,12 +71,19 @@ docker pull ghcr.io/kennymudiaga/agent-board:v0.2.1
 npm view @agentboard/cli@0.2.1 --json | grep -i provenance
 ```
 
-## Account-owner checklist (one-time)
+## Account-owner checklist
 
-- [ ] npm trusted publisher bound: `@agentboard/cli` → `kennymudiaga/agent-board` → `release.yml`
-- [ ] (fallback only) stage-only GAT installed as repo secret `NPM_TOKEN` **with the workflow switched to `npm stage publish`**
-- [ ] ghcr is public (Package settings → Change visibility) or the pull
-      verify step uses an authenticated `docker login`
+**For the first publish (v0.2.1):**
+
+- [ ] Create a **stage-only** GAT scoped to `@agentboard/cli`
+- [ ] Create the `release` environment (Settings → Environments) and install the GAT as `NPM_TOKEN`
+- [ ] Tag `v0.2.1` → workflow stages the package → run `npm stage approve` (2FA) to publish
+- [ ] ghcr: image auto-pushes via the workflow (`packages: write`); make the package public or verify with an authenticated pull
+
+**After the first publish (migrate to OIDC):**
+
+- [ ] Bind the trusted publisher: `@agentboard/cli` → `kennymudiaga/agent-board` → `release.yml` → environment `release`
+- [ ] Switch the npm job to OIDC (`id-token: write`, `--provenance`, drop `NODE_AUTH_TOKEN`); optionally delete the GAT
 
 ## CI parity
 

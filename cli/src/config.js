@@ -47,13 +47,13 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
 }
 
 export function saveConfig(cfg) {
-  // Env-only runs (no pre-existing config file) persist cursors and nothing
-  // else — the env is the identity source, and a token from AB_TOKEN must
-  // never reach disk (issue #25). When a stored token exists, keep it even if
-  // AB_TOKEN is set for this session (issue #26 — never erase deliberate
-  // config); the env token itself is never written.
+  // Env-only runs (no pre-existing config file) persist cursors + boards and
+  // nothing else — boards are non-secret operational state (`ab join` must
+  // survive the process), but a token from AB_TOKEN must never reach disk
+  // (issue #25). When a stored token exists, keep it even if AB_TOKEN is set
+  // for this session (issue #26 — never erase deliberate config).
   const payload = cfg.fromEnv
-    ? { cursors: cfg.cursors }
+    ? { boards: cfg.boards, cursors: cfg.cursors }
     : {
         server: cfg.server,
         token: cfg.fileToken ?? (cfg.tokenFromEnv ? undefined : cfg.token),

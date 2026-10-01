@@ -356,6 +356,24 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('env-only join persists membership without persisting the token (dogfood kink)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // env-only identity; join a board; the membership must survive.
+      const joined = await runCli(['join', '--board', 'sprint-7'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(joined.code).toBe(0, joined.stderr);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.boards).toEqual(['sprint-7']); // membership persisted
+      expect(cfg.token).toBeUndefined(); // token still never written
+      expect(cfg.server).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('existing config keeps its stored token even when AB_TOKEN is set (regression #26)', async () => {
     const dir = makeWorkspace();
     try {

@@ -10,9 +10,13 @@ permissions:
 jobs:
   npm-publish:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write # trusted publishing (OIDC) — no NODE_AUTH_TOKEN
-      contents: read
+    # Stage-only GAT (NPM_TOKEN) until trusted publishing (OIDC) is possible —
+    # npm requires @agentboard/cli to exist on the registry before a trusted
+    # publisher can be bound. After the first publish, migrate this job to
+    # OIDC (id-token: write, no token, npm publish --provenance) per
+    # docs/releasing.md. `npm stage publish` stages the package; a human
+    # approves with 2FA (`npm stage approve`) before it goes live.
+    environment: release
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,8 +27,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish @agentboard/cli (trusted publishing, provenance)
-        run: npm publish --workspace cli --access public --provenance
+      - name: Publish @agentboard/cli (staged — human 2FA approval)
+        run: npm stage publish --workspace cli --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   ghcr-push:
     runs-on: ubuntu-latest

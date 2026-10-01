@@ -24,7 +24,7 @@ commands:
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
              [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]
-             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key>]
+             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key> | --key <key>]
   read       pickup messages (loop, long-poll)
              ab read --board <name> [--wait <sec>] [--since <cursor>] [--ack claimed|done|failed] [--error <text>] [--once]
   ack        acknowledge a claimed message
@@ -46,7 +46,7 @@ global options:
   --json     machine-readable JSON on stdout
   --help     show this help
 
-env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID
+env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_ROLES (comma-separated)
 config file:  .agentboard.json in the workspace directory`;
 
 function parseArgs(args) {

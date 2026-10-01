@@ -400,6 +400,12 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       if (!ID_RE.test(q.for)) return error(c, 400, 'bad_request', 'invalid for agent id');
       forAgent = q.for;
     }
+    // #39: the `for` param must never override a bound identity — pickup
+    // claims happen in the caller's own name only. (Identity-less callers get
+    // the read-only observability view below, where `for` is ignored.)
+    if (callerAgent && forAgent && forAgent !== callerAgent) {
+      return error(c, 401, 'unauthorized', 'for must match the authenticated agent id');
+    }
     let statusFilter: MsgState | undefined;
     if (q.status !== undefined) {
       if (!MSG_STATES.includes(q.status as MsgState)) {
