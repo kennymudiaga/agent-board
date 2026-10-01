@@ -179,7 +179,7 @@ Query params:
 | Param | Default | Notes |
 |---|---|---|
 | `since` | `0` | Cursor: return only messages with `seq > since` (§6.2). |
-| `for` | `X-Agent-ID` | Who to fetch for (delivery matching against `to`). |
+| `for` | `X-Agent-ID` | Who to fetch for (delivery matching against `to`). | **v0.2.1: bound to the authenticated identity** — any value other than the caller's own id is rejected with 401 (per-agent tokens and workspace-token identities alike).
 | `wait` | `0` | Long-poll seconds. Clamped to `0–60`. |
 | `status` | — | **Observability only**: `pending`\|`claimed`\|`done`\|`failed`\|`dead`\|`expired`. When present, returns a read-only view (no claiming, no long-poll) — used by dashboards, not agents. |
 

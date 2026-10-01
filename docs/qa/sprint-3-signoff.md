@@ -2,14 +2,12 @@
 
 > QA review of `docs/sprint-3` implementation (branch `feature/sprint-3`, PR #36).
 > Reviewer: QA Engineer (Ivy) · Date: 2026-10-01 · Scope: T1–T8 + A2A spike (spec v0.2.1)
-> Board dogfood: reviewed while joined to the running dogfood server as `dev-1` on `sprint-3`.
+> **Re-review: 2026-10-01 (fix commits `786c797`/`60db829`, issues #37/#38/#39) — see §8.**
 
-## Verdict
+## Verdict (final, after remediation)
 
-**❌ BLOCKED (one major security bug)** — T1/T2/T3/T4/T5/T7/T8 verified; T6 has a
-**per-agent-token impersonation hole** (issue #39) that violates the task's own
-done-when ("an agent with only its own token cannot act as another agent").
-PR #36 must not merge until #39 is fixed and re-verified.
+**✅ PASS** — the sprint-3 security blocker (#39) is fixed and re-verified live;
+both dogfood kinks (#37, #38) verified. PR #36 is clear to merge from QA.
 
 ---
 
@@ -17,69 +15,42 @@ PR #36 must not merge until #39 is fixed and re-verified.
 
 | Suite | Tests | Passed | Failed | Notes |
 |---|---|---|---|---|
-| `server/test/lifecycle.test.ts` | 48 | 48 | 0 | incl. token mint/use/impersonation/revoke (3), boards dir |
+| `server/test/lifecycle.test.ts` | 48 | 48 | 0 | incl. new #39 regression (2 tests: for-mismatch 401 for token + workspace flows) |
 | `server/test/dashboard.test.ts` | 5 | 5 | 0 | |
-| `mcp/test/tools.test.js` | 8 | 8 | 0 | per-tool, in-process real server |
-| `mcp/test/e2e.test.js` | 3 | 3 | 0 | JSON-RPC over stdio: initialize/list/call/error-path |
+| `mcp/test/tools.test.js` | 8 | 8 | 0 | |
+| `mcp/test/e2e.test.js` | 3 | 3 | 0 | |
 | `vscode-ext/test/board.test.js` | 5 | 5 | 0 | |
-| `cli/test/cli.test.js` | 16 | 16 | 0 | incl. token E2E, archive E2E |
-| **Total** | **86** | **86** | **0** | |
+| `cli/test/cli.test.js` | 19 | 19 | 0 | incl. env-only join boards persistence (#37), help text (#38) |
+| **Total** | **88** | **88** | **0** | (was 86; 2 new regression tests) |
 
 - `npm run build` (tsc, strict): clean.
-- CI on sprint-3 head `5dbd4f9`: **3/3 jobs green** — `build-and-test`, `extension-ui` (T4 host-wiring), `docker`.
-- **npm v12 (T8) re-verified independently:** clean `npx npm@12 ci` in a temp copy → better-sqlite3 native module loads → **86/86 tests pass** under npm v12 defaults.
-- Extension host-wiring UI suite (T4): dev team's local run is corroborated by the on-disk VS Code download; CI `extension-ui` green. Not re-run locally (node_modules restore needed first; CI covers it).
+- CI on the fix head: **3/3 jobs green** (`build-and-test`, `extension-ui`, `docker`).
+- npm v12 clean-`ci` + 86/86 re-verified in a temp copy (earlier round; unaffected by the fix).
 
-## 2. Live verification (dogfood server on :8080 + fresh temp DBs)
+## 2. Live re-verification (dogfood server on :8080)
 
-- **MCP server (T1):** drove real JSON-RPC over stdio — `initialize` → `tools/list` (9 tools with schemas) → `whoami` → `list_boards` → `heartbeat` (roles via AB_ROLES). All correct.
-- **Archive (T5):** `ab archive --board sprint-3 --git` → 4 threads as markdown, one commit per thread, closed-thread `(closed)` marker, **idempotent rerun (no new commits)**.
-- **Boards dir (§5.8):** `GET /v1/boards` identity-less → sprint-3 with message count.
-- **T6 matrix (before discovering #39):** token mint (admin-only, `abt_` + 24B hex, SHA-256 at rest); agent token + wrong `X-Agent-ID` → 401; agent token cannot mint → 401; heartbeat with mismatched agentId → 401; heartbeat with own agentId → 200; revoke → dead token → 401. **All correct — and then the `for`-param hole (#39).**
-- **Sprint-1/2 regressions:** identity-less GETs, ttl:0, watermark crash safety, fan-out, deadlines — unchanged (suite).
+- **#39 (security blocker):** minted a `qa-1` token; `GET .../messages?for=dev-1` with the token → **401 "for must match the authenticated agent id"**. Workspace token with identity producer-1 + `for=dev-1` → **401** (binding tightened for all authenticated callers). `for=self` → works. Identity-less + `for=dev-1` → observability view, `for` ignored, never claims. Victim message claimed fresh by its owner (attempts=1, claimAgent=dev-1). **Impersonation impossible.**
+- **#37 (env-only membership):** env-only `ab join --board sprint-3` → config written with `boards` only (**no token on disk**); env-only heartbeat → membership registered; agent visible in `?board=sprint-3` directory; **broadcast delivery reached the env-only member** (delivery rows created, member picked it up).
+- **#38 (help text):** `ab --help` lists `AB_ROLES (comma-separated)` in env overrides and the `--key` alias.
 
-## 3. Bugs filed
+## 3. Bugs filed (all resolved)
 
 | Issue | Severity | Summary | Status |
 |---|---|---|---|
-| [#39](https://github.com/kennymudiaga/agent-board/issues/39) | **major** | **Per-agent token impersonation via `?for=` on pickup** — a token holder claims messages in ANY agent's name (claimAgent = victim), reads their mail, and can run their mail to dead. Reproduced live. Violates T6 done-when and spec §4 binding. | open — merge blocker |
+| [#37](https://github.com/kennymudiaga/agent-board/issues/37) | minor | env-only identities couldn't join boards (no membership persisted) | ✅ verified fixed |
+| [#38](https://github.com/kennymudiaga/agent-board/issues/38) | minor | `ab --help` omitted AB_ROLES | ✅ verified fixed |
+| [#39](https://github.com/kennymudiaga/agent-board/issues/39) | **major** | per-agent token impersonation via pickup `?for=` | ✅ verified fixed |
 
-## 4. What passed review (no issues found)
+## 4. Non-blocking notes
 
-- MCP tool layer: errors-as-text (server survives bad calls), env-only config (never writes files), zod schemas; `read` correctly exposes watermark for resume.
-- Token storage: SHA-256 at rest, plaintext once at mint, admin-only mint/revoke, `X-Agent-ID` + heartbeat-body binding checks.
-- Release plumbing (T2): trusted-publishing workflow (`id-token: write`, `--provenance`, no token), ghcr `packages: write`, `docs/releasing.md` — sound; blocked only on account-owner setup (Producer action).
-- `allowScripts` pinned entries (better-sqlite3@12.11.1, esbuild@0.28.2/0.21.5) — verified working under npm 12.
-- `AB_ROLES` env plumbing, `ab whoami`, `--key` alias — correct.
-- A2A spike writeup — findings-only, sensible recommendation (relay on server).
+- **Spec doc debt:** `docs/spec.md` §5.4 still documents `for` as "Who to fetch for (delivery matching against to)" — the implementation now binds `for` to the authenticated identity (401 on mismatch). Spec should be amended to match (one line).
+- **MCP `read` watermark:** not persisted by the tool — the agent passes `since` explicitly. Documented in mcp.md per fix commit `60db829`.
+- **MCP `send`:** `message`+`payload` both given → silently prefers payload (CLI errors) — fixed in `60db829` to reject.
+- Test pollution cleaned up after verification (test tokens revoked, test messages acked).
 
-## 5. Claim vs. reality check
+## 5. Sign-off (final)
 
-| Claim | Reality |
-|---|---|
-| "86/86 vitest green" | ✅ confirmed |
-| "Build clean" | ✅ confirmed |
-| "CI green ×3 (incl. extension-ui)" | ✅ confirmed |
-| "npm v12 clean ci + tests" | ✅ independently re-verified |
-| "MCP 9 tools over stdio" | ✅ live-verified |
-| "Archive idempotent" | ✅ live-verified |
-| "T6: agent cannot act as another agent" | ❌ **false as shipped** — `?for=` impersonation (#39) |
-| "4/4 UI tests" | ⚠️ CI job green + local artifact present; not re-run locally this pass |
-
-## 6. Blocker & recommendation
-
-- **Blocker (#39):** in pickup mode, when a per-agent token is in use, reject `for` unless it equals the token's agent (401), or ignore it. One check in `app.ts`; add a regression test (mint token → `?for=other` → 401; `?for=self` → works; workspace token unchanged).
-- **Non-blocking:** `read` tool doesn't persist the watermark (agent must pass `since`) — acceptable MCP design, document if desired; `send` with both `message` and `payload` silently prefers payload (CLI errors) — minor inconsistency.
-
-## 7. Sign-off
-
-- Automated tests: 86/86 pass; npm-12 install verified; CI 3/3.
-- Manual playthrough: all sprint-3 features verified live except the T6 binding guarantee, which FAILS (#39).
-- Blocker status: **BLOCKED on #39** (security).
-- Sign-off: ❌ **BLOCKED** — core features pass; #39 must be fixed and re-verified before PR #36 merges.
-
-## 8. Board dogfood notes
-
-- Joined the running server as `dev-1` (workspace config), heartbeat busy, awaiting dispatches.
-- Received Producer's broadcast (#5: release-path decision, PR #36 review request, two dogfood kinks pending). Acknowledged; replied with review status + blocker (#6).
-- Identity note for the Producer: this QA session runs as `dev-1` (roles [dev]); `qa-1`'s online presence was a test artifact (token revoked). Dispatch to `agent:dev-1` or `role:dev`.
+- Automated tests: **88/88 pass** (2 new regression tests).
+- Manual playthrough: #39, #37, #38 re-verified live; full sprint-3 feature set verified in the earlier round.
+- Blocker status: **none**.
+- Sign-off: ✅ **PASS** — PR #36 clear to merge; issues #37–#39 ready for the Producer to close.
