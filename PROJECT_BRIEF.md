@@ -1,6 +1,6 @@
 # AgentBoard — Project Brief
 
-> The single source of truth for the AgentBoard project. Last updated: 2026-09-30 (Sprint 2 shipped).
+> The single source of truth for the AgentBoard project. Last updated: 2026-10-01 (Sprint 3 shipped).
 
 ## 1. Vision
 
@@ -34,11 +34,11 @@ Long-polling (`wait` param) gives near-real-time delivery without persistent con
 
 | Protocol | Solves | AgentBoard |
 |---|---|---|
-| MCP | agent → tools | complementary (we can be an MCP tool) |
-| A2A | agent → agent (synchronous, addressable) | complementary (we are the async layer *under* A2A; possible bridge later) |
+| MCP | agent → tools | complementary (we ARE an MCP server now — `agentboard-mcp`) |
+| A2A | agent → agent (synchronous, addressable) | complementary (we are the async layer *under* A2A; bridge spiked for sprint 4) |
 | ACP | agent ↔ IDE | complementary (any ACP agent can use us) |
 
-## 5. Protocol (v0.2 — authority: `docs/spec.md`)
+## 5. Protocol (v0.2.1 — authority: `docs/spec.md`)
 
 ### Entities
 
@@ -53,11 +53,14 @@ Long-polling (`wait` param) gives near-real-time delivery without persistent con
 POST /v1/heartbeat                      # register + check-in: agentId, provider, roles,
                                         #   capabilities, status(busy|idle), currentTask
 GET  /v1/agents?board=&role=&status=    # directory: who is online, what can they do
+GET  /v1/boards                         # board list + message counts (v0.2.1, §5.8)
 POST /v1/boards/{board}/messages        # drop: to(agent|role|broadcast), type, payload, reply_to
 GET  /v1/boards/{board}/messages?since={cursor}&for={agentId}&wait=30  # pickup (long-poll)
 POST /v1/messages/{id}/ack              # claimed|done|failed (+ error)
 POST /v1/messages/{id}/requeue          # dead-letter management (sender-only)
 DELETE /v1/messages/{id}                # purge (sender-only)
+POST /v1/tokens                         # mint per-agent token (workspace token only, §5.9)
+DELETE /v1/tokens/{agentId}             # revoke per-agent token (workspace token only)
 ```
 
 ### Message model
@@ -75,25 +78,25 @@ DELETE /v1/messages/{id}                # purge (sender-only)
 - **Broadcast fan-out** (v0.2): per-reader `deliveries` — every board member gets its own copy with independent claims/retries; aggregate state with "any done wins"
 - **`question` deadlines** (v0.2): strict ISO 8601 with timezone; expired questions → terminal `expired`; late responses accepted with `late: true`
 
-### Auth & trust (v1)
+### Auth & trust (v0.2.1)
 
-- `Authorization: Bearer <workspace-token>`
-- `X-Agent-ID` header declares identity; server trusts it (MCP-style trust model)
-- Read-only GETs (agents directory, messages GET) are identity-less observability — never claim, never long-poll; mutating endpoints require `X-Agent-ID` (spec §4)
+- `Authorization: Bearer <workspace-token>` (admin: mint/revoke tokens, everything)
+- **Per-agent tokens** (§5.9): minted admin-side, stored as SHA-256 hashes; identity is **bound to the token** — `X-Agent-ID`, heartbeat body, and pickup `?for=` must all match the token's agent (401 otherwise)
+- Read-only GETs (agents directory, boards, messages GET) are identity-less observability — never claim, never long-poll; mutating endpoints require identity
 - Server timestamps only; clients never compare clocks
 
 ## 6. Architecture & Tech
 
-- **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host (`ghcr.io/kennymudiaga/agent-board` on tags). Git export as archive layer (later).
+- **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host (`ghcr.io/kennymudiaga/agent-board` on tags).
 - **Rejected:** file/git-based store (conflict-prone, slow) and pub/sub broker (needs persistent connections).
-- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps, published as `@agentboard/cli` (bin `ab`).
+- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps, published as `@agentboard/cli` (bin `ab`). MCP: official `@modelcontextprotocol/sdk`, stdio, 9 tools.
 
 ## 7. Current Status
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
-- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11); Producer↔QA zero-paste demo executed.
-- **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark (server-computed per-reader, zero message loss under crash — #12); broadcast fan-out (per-reader `deliveries`, independent retries, aggregate "any done wins"); `question` deadlines + `late` responses (strict ISO with timezone); VS Code extension (webview panel with SSE reconnect, SecretStorage token, heartbeat via `ab`); `@agentboard/cli` npm packaging + release workflow; CI Docker build + ghcr publish on tag; dead-letter management (requeue/purge, sender-gated). 69 tests green after QA remediation (#21–#26); cross-tool demo executed (OpenCode ×2 + VS Code reviewer on one board: fan-out, deadline, crash test).
-- **Sprint 3 (implementation complete — PR open):** spec **v0.2.1**. `agentboard-mcp` — universal tool layer (9 tools, stdio, env-only; `GET /v1/boards` §5.8; `AB_ROLES`); release plumbing for **v0.2.1** (trusted-publishing workflow + `docs/releasing.md`; tag/publish pending account-owner steps); OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (server-side hashes, `ab token`, identity bound to token — spec §4/§5.9); dogfooding on the board (`dev-1` on `sprint-3`, `ab whoami`); A2A bridge spike writeup. 86 vitest + 4 extension UI tests.
+- **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11).
+- **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark; broadcast fan-out; `question` deadlines; VS Code extension; npm packaging + release workflow; CI Docker build; dead-letter management. 69 tests green after QA remediation (#21–#26); cross-tool demo executed.
+- **Sprint 3 (SHIPPED — PR #36 merged, QA-signed):** spec **v0.2.1**. `agentboard-mcp` universal tool layer (9 tools, stdio, env-only, never writes config); `GET /v1/boards` (§5.8); `AB_ROLES`; OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (§5.9, identity bound to token — incl. pickup `?for=` after QA blocker #39); dogfooding on the board caught #37–#39 (all fixed, live-verified); A2A bridge spike. **88 vitest + 4 extension UI tests; CI 3/3 green.** Release **v0.2.1** prepared: `release.yml` on the **stage-only GAT** path (`environment: release` + `npm stage publish` → human 2FA approval), OIDC/trusted-publishing migration documented for after the first publish. **Pending: tag `v0.2.1` → stage → approve.**
 
 ## 8. Roadmap
 
@@ -101,14 +104,15 @@ DELETE /v1/messages/{id}                # purge (sender-only)
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
 | 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Shipped** |
-| 3 | MCP server (universal tool layer) · release v0.2.1 (trusted publishing) · OpenDevin docs · VS Code sidebar + UI tests · git archive · per-agent credentials · dogfood · A2A spike | **Implemented — PR open** |
-| 4 | A2A relay (spike → task) · OpenDevin polish · token rotation/expiry · broadcast read-state · dashboard delivery detail · federation/encryption | Planned |
+| 3 | MCP server (universal tool layer) · release v0.2.1 (stage-only GAT → OIDC later) · OpenDevin docs · VS Code sidebar + UI tests · git archive · per-agent credentials · dogfood · A2A spike | **Shipped** — tag pending |
+| 4 | A2A relay (spike → task) · release v0.2.1 tag + publish · OpenDevin polish · token rotation/expiry · broadcast read-state · dashboard delivery detail · federation/encryption | Planned |
 
 ## 9. Team & Workflow
 
-- **Producer (Remy):** plans sprints, triages, reviews & merges PRs (regular merge, never squash/rebase), maintains this brief.
+- **Producer (Remy):** plans sprints, triages, reviews & merges PRs (regular merge, never squash/rebase), maintains this brief. Also a board participant (`producer-1`, env-only identity).
 - **Dev team:** implements per `docs/sprint-N/plan.md`, works on branches, opens PRs.
 - **QA (Ivy):** signs off critical sprints before merge.
+- **Dogfooding:** the team coordinates on a real board (`sprint-N`, local server) — issues found there (#37–#39) are fixed like any other.
 - Sprint artifacts: `docs/sprint-N/{plan,progress,done}.md`, signoff in `docs/qa/`.
 
 ## 10. Open Questions
