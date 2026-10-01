@@ -17,6 +17,8 @@ usage: ab <command> [options] [--json]
 commands:
   init       write workspace config (.agentboard.json)
              ab init --server <url> --token <token> [--agent-id <id>] [--roles a,b] [--provider <name>]
+             ab init --global --server <url> --token <token> [--agent-id <id>] [--roles a,b]
+               machine-wide config so any repo on this machine needs no re-entry (#41)
   join       register board membership
              ab join --board <name> [--board <name2>]
   heartbeat  register + check in (loop)
@@ -54,7 +56,9 @@ global options:
   --help     show this help
 
 env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_ROLES (comma-separated)
-config file:  .agentboard.json in the workspace directory`;
+config file:  .agentboard.json in the workspace directory (overrides the global config)
+global file:  %APPDATA%\\agentboard\\config.json (win32) | ~/.config/agentboard/config.json (posix)
+              written once per machine with 'ab init --global' — tokens never leave it`;
 
 function parseArgs(args) {
   const out = { _: [] };
