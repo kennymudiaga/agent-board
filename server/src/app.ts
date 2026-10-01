@@ -101,16 +101,20 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       return next();
     }
 
-    // Per-agent token (v0.2.1, §5.9): identity is bound to the token. If an
-    // X-Agent-ID is also sent it must match — impersonation is impossible.
-    const tokenAgent = store.agentForToken(bearer);
+    // Per-agent token (v0.2.1, §5.9; expiry sprint 5 T5): identity is bound to
+    // the token. If an X-Agent-ID is also sent it must match — impersonation
+    // is impossible. An expired token gets its own 401 code.
+    const tokenAgent = store.tokenAgent(bearer, Date.now());
     if (tokenAgent) {
+      if (tokenAgent.expired) {
+        return error(c, 401, 'token_expired', 'token expired — mint a new one with `ab token --agent-id <id>`');
+      }
       const xid = c.req.header('X-Agent-ID');
-      if (xid !== undefined && xid !== tokenAgent) {
+      if (xid !== undefined && xid !== tokenAgent.agentId) {
         return error(c, 401, 'unauthorized', "X-Agent-ID does not match the token's agent");
       }
-      c.set('agentId', tokenAgent);
-      c.set('tokenAgent', tokenAgent);
+      c.set('agentId', tokenAgent.agentId);
+      c.set('tokenAgent', tokenAgent.agentId);
       return next();
     }
 
@@ -260,8 +264,18 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     if (typeof agentId !== 'string' || !ID_RE.test(agentId)) {
       return error(c, 422, 'unprocessable', 'invalid agentId');
     }
-    const { token: minted } = store.mintToken(agentId, Date.now());
-    return c.json({ agentId, token: minted, note: 'store this token now — it is only shown once' }, 201);
+    // Optional per-token expiry (sprint 5 T5): ttlDays in 1..3650. Absent =
+    // no expiry (back-compat). Minting for an agent that already has a token
+    // atomically replaces it (rotation — the old token dies immediately).
+    let ttlDays: number | null = null;
+    if (body.ttlDays !== undefined) {
+      if (!Number.isInteger(body.ttlDays) || (body.ttlDays as number) < 1 || (body.ttlDays as number) > 3650) {
+        return error(c, 422, 'unprocessable', 'ttlDays must be an integer in 1..3650');
+      }
+      ttlDays = body.ttlDays as number;
+    }
+    const { token, expiresAt } = store.mintToken(agentId, Date.now(), ttlDays ?? undefined);
+    return c.json({ agentId, token, expiresAt, note: 'store this token now — it is only shown once' }, 201);
   });
 
   app.delete('/v1/tokens/:agentId', (c) => {

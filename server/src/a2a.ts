@@ -186,9 +186,12 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
 
     const auth = c.req.header('Authorization');
     const bearer = auth?.startsWith('Bearer ') ? auth.slice('Bearer '.length) : null;
-    const bound = bearer ? store.agentForToken(bearer) : null;
-    if (bound !== agentId) {
-      return c.json(rpcErr(null, RPC_CODES.UNAUTHORIZED, "unauthorized: this agent's per-agent token is required (spec §5.9)"), 401);
+    const bound = bearer ? store.tokenAgent(bearer, Date.now()) : null;
+    if (!bound || bound.expired || bound.agentId !== agentId) {
+      return c.json(
+        rpcErr(null, RPC_CODES.UNAUTHORIZED, bound && bound.expired ? 'token expired — mint a new one' : "unauthorized: this agent's per-agent token is required (spec §5.9)"),
+        401,
+      );
     }
 
     let body: unknown;

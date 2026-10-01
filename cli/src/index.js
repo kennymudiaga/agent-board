@@ -40,7 +40,7 @@ commands:
   archive    export a board to a git repo as markdown history (threads intact)
              ab archive --board <name> --git <dir>
   token      mint or revoke a per-agent token (workspace token required; admin-only)
-             ab token --agent-id <id> [--revoke]
+             ab token --agent-id <id> [--ttl-days <n>] [--rotate] [--revoke]
   whoami     show this agent's identity and configuration
              ab whoami [--json]
   agents     list the agent directory (roles/status/presence; offline included)
