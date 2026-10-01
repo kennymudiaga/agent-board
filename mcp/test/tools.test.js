@@ -35,8 +35,10 @@ const out = (r) => JSON.parse(r.content[0].text);
 
 describe('agentboard-mcp tools (T1)', () => {
   beforeEach(async () => {
-    // Fresh identity each test.
-    await callTool('heartbeat', { interval: 15, status: 'idle', board: 'sprint-8' });
+    // Fresh identity each test. roles:'' pins an identity-less agent so the
+    // ambient AB_ROLES / workspace config never leaks into the directory
+    // (issue #46: list_agents/list_boards must be env-independent).
+    await callTool('heartbeat', { interval: 15, status: 'idle', board: 'sprint-8', roles: '' });
   });
   afterEach(() => {
     // Clean the board between tests.
