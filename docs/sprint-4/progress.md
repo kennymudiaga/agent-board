@@ -8,8 +8,10 @@
 |---|---|---|
 | T1 — fix #46 (MCP read-only test) | **MERGED** | PR #47 (`3e520f0`), CI 3/3, suite 92/92, issue #46 closed |
 | T2 — `ab init --global` (#41) | **MERGED** | PR #48 (`6d60994`), CI 3/3, 96/96 local, issue #41 closed |
-| T3 — A2A relay (headline) | PR #49 up, **QA in progress** | Live demo passed (client → board → worker via `ab` → `completed`); 103/103; `docs/a2a.md` + `docs/a2a-demo/demo-client.mjs` |
+| T3 — A2A relay (headline) | **MERGED — QA PASS** | PR #49 (`308f8ca`), CI 3/3, 99/99 `npm test` (+4 VS Code Test Runner); QA sign-off `docs/qa/sprint-4-signoff.md` |
 | T4 — OpenDevin polish | **MERGED** | PR #50 (`db74f63`), docs-only drift fixes (MCP not in npm CLI; stray pip line) |
+
+**CHUNK 1 SHIPPED — see `docs/sprint-4/done.md`.**
 
 ## Notes
 
