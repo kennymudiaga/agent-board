@@ -10,8 +10,12 @@ permissions:
 jobs:
   npm-publish:
     runs-on: ubuntu-latest
-    # Routine releases: stage-only GAT keeps a human 2FA approval gate. Migrate
-    # to trusted publishing (OIDC) when configured on npm.
+    # Trusted publishing (OIDC): npm validates the GitHub Actions identity —
+    # no NODE_AUTH_TOKEN, no long-lived tokens. Publisher bound on npm to
+    # kennymudiaga/agent-board, workflow release.yml, environment release.
+    permissions:
+      id-token: write
+      contents: read
     environment: release
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +27,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish @agent_board/cli (staged — human 2FA approval)
-        run: npx --yes npm@12 stage publish --workspace cli --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish @agent_board/cli (trusted publishing, provenance)
+        run: npx --yes npm@12 publish --workspace cli --access public --provenance
 
   ghcr-push:
     runs-on: ubuntu-latest

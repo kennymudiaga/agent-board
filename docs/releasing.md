@@ -37,10 +37,12 @@ after the bootstrap and replace it with the chosen long-term path below.
 
 ## Future releases
 
-### Preferred: trusted publishing (OIDC)
+### Active: trusted publishing (OIDC)
 
-After `@agent_board/cli` exists on npm, configure the trusted publisher from
-the package's npm access/settings page:
+Configured 2026-10-01: npm's trusted publisher for `@agent_board/cli` is bound
+to `kennymudiaga/agent-board`, workflow `release.yml`, environment `release`.
+The workflow publishes with `id-token: write` and `--provenance`; there is no
+npm token anywhere. Reference — the npm-side configuration:
 
 - Provider: GitHub Actions
 - Package: `@agent_board/cli`
@@ -49,9 +51,8 @@ the package's npm access/settings page:
 - Workflow: `release.yml`
 - Environment: `release`
 
-Then change the npm job to add `id-token: write`, remove `NODE_AUTH_TOKEN`,
-and run `npm publish --workspace cli --access public --provenance`.
-No long-lived npm token is needed.
+The workflow already does this: `npm publish --workspace cli --access public
+--provenance` with `id-token: write` and no `NODE_AUTH_TOKEN`.
 
 ### Alternative: stage-only GAT
 
@@ -70,8 +71,8 @@ For a human approval gate on every release, create a GAT scoped to
 npm i -g @agent_board/cli && ab --version   # → ab 0.2.1
 docker pull ghcr.io/kennymudiaga/agent-board:v0.2.1
 
-# package metadata
-npm view @agent_board/cli@0.2.1 --json
+# package metadata + provenance
+npm view @agent_board/cli@0.2.1 --json | grep -i provenance
 ```
 
 ## Account-owner checklist
@@ -86,9 +87,9 @@ npm view @agent_board/cli@0.2.1 --json
 
 **After bootstrap:**
 
-- [ ] Revoke the publish-and-stage GAT
-- [ ] Bind trusted publishing for `@agent_board/cli`, or create a stage-only GAT
-- [ ] Update `release.yml` to the selected routine-release path
+- [x] Bind trusted publishing for `@agent_board/cli` (OIDC active)
+- [x] Update `release.yml` to OIDC (`id-token: write`, `--provenance`, no token)
+- [ ] Revoke the publish-and-stage bootstrap GAT in your npm account (the GitHub secret is already deleted)
 
 ## CI parity
 
