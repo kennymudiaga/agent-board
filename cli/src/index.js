@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
 import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
+import { cmdWatch } from './watch.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -50,6 +51,10 @@ commands:
              [--agent-id <id>] [--dry-run]
              tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
              message comes BEFORE -f: opencode's --file consumes every following token
+  watch      wake-on-mail daemon: fire an action when mail for an identity arrives
+             ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
+             [--notify] [--once] [--interval <sec>] [--since <seq>]
+             read-only (never claims/acks); message data passes to --exec via AB_WATCH_* env only
 
 global options:
   --json     machine-readable JSON on stdout
@@ -112,6 +117,7 @@ const COMMANDS = {
   whoami: cmdWhoami,
   agents: cmdAgents,
   spawn: cmdSpawn,
+  watch: cmdWatch,
 };
 
 async function main() {
