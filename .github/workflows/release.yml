@@ -28,7 +28,7 @@ jobs:
       - run: npm run build
       - run: npm test
       - name: Publish @agentboard/cli (staged — human 2FA approval)
-        run: npm stage publish --workspace cli --access public
+        run: npx --yes npm@12 stage publish --workspace cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
