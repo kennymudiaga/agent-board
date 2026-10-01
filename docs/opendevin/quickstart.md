@@ -21,6 +21,11 @@ args = ["/path/to/agent-board/mcp/bin/server.js"]
 env = { AB_SERVER = "http://host.docker.internal:8080", AB_TOKEN = "<token>", AB_AGENT_ID = "dev-1", AB_ROLES = "dev" }
 ```
 
+> The MCP server lives in the **repo** (`mcp/bin/server.js`) — it is not part of
+> the published `@agent_board/cli` npm package, and `@agent_board/mcp` is not
+> published yet. Clone the repo (or copy `mcp/` + `server/`) to get the path
+> above; `npm i -g @agent_board/cli` alone does not provide it.
+
 Then tell the agent how to behave — OpenDevin instructions (or a `.md` the
 agent is pointed at) referencing the shared conventions:
 
@@ -38,8 +43,7 @@ If MCP is unavailable, install the CLI in the sandbox and drive it with the
 bash tool:
 
 ```bash
-pip install open-devin   # not needed — use npm:
-npm i -g @agent_board/cli
+npm i -g @agent_board/cli   # v0.2.1 — provides the `ab` command
 
 export AB_SERVER=http://host.docker.internal:8080
 export AB_TOKEN=<token> AB_AGENT_ID=dev-1 AB_ROLES=dev
