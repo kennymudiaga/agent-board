@@ -460,3 +460,36 @@ export async function cmdPurge(flags, json) {
     console.log(`purged ${id}`);
   }
 }
+
+// ------------------------------------------------------------------ agents (issue #42 part 1)
+
+export async function cmdAgents(flags, json) {
+  const cfg = loadConfig();
+  const qs = [];
+  if (flags.board !== undefined) {
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(flags.board)) usage(`invalid board name: ${flags.board} (must match ^[a-z0-9][a-z0-9._-]{0,63}$)`);
+    qs.push(`board=${encodeURIComponent(flags.board)}`);
+  }
+  if (flags.role !== undefined) {
+    if (flags.role.length === 0 || flags.role.length > 64) usage('--role must be 1..64 characters');
+    qs.push(`role=${encodeURIComponent(flags.role)}`);
+  }
+  if (flags.status !== undefined) {
+    if (!['idle', 'busy'].includes(flags.status)) usage('--status must be idle or busy');
+    qs.push(`status=${flags.status}`);
+  }
+
+  const data = await apiCall(cfg, 'GET', `/v1/agents${qs.length ? `?${qs.join('&')}` : ''}`, { agent: cfg.agentId });
+  if (json) {
+    console.log(JSON.stringify(data));
+  } else if (data.agents.length === 0) {
+    console.log('no agents found');
+  } else {
+    for (const a of data.agents) {
+      const roles = a.roles?.length ? a.roles.join(',') : '-';
+      const boards = a.boards?.length ? a.boards.join(',') : '-';
+      const task = a.currentTask ? ` task="${a.currentTask}"` : '';
+      console.log(`${a.agentId} [${a.presence}] ${a.status ?? 'idle'} roles=[${roles}] boards=[${boards}]${task}`);
+    }
+  }
+}
