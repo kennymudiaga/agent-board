@@ -48,7 +48,7 @@ function activate(context) {
   // The CLI is the client — warn early when it isn't installed.
   findAb().then((ab) => {
     if (!ab) {
-      vscode.window.showWarningMessage('AgentBoard: `ab` CLI not found on PATH. Install it with `npm i -g @agentboard/cli`.');
+      vscode.window.showWarningMessage('AgentBoard: `ab` CLI not found on PATH. Install it with `npm i -g @agent_board/cli`.');
     }
   });
 
