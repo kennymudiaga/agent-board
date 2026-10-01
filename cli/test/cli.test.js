@@ -589,4 +589,48 @@ describe('ab CLI against the reference server', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('ab agents lists the directory with roles/status/presence and filters (issue #42 part 1)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--interval', '15', '--status', 'busy', '--task', 'reviewing', '--once'], { cwd: dir });
+
+      // Human-readable listing carries id, presence, status, roles.
+      const list = await runCli(['agents', '--board', 'sprint-7'], { cwd: dir });
+      expect(list.code).toBe(0, list.stderr);
+      expect(list.stdout).toContain(AGENT_ID);
+      expect(list.stdout).toContain('[online]');
+      expect(list.stdout).toContain('busy');
+      expect(list.stdout).toContain('qa,dev');
+
+      // --json returns the raw directory shape with presence computed.
+      const json = await runCli(['agents', '--board', 'sprint-7', '--json'], { cwd: dir });
+      const data = JSON.parse(json.stdout);
+      const me = data.agents.find((a) => a.agentId === AGENT_ID);
+      expect(me).toMatchObject({ roles: ['qa', 'dev'], status: 'busy', boards: ['sprint-7'] });
+      expect(me.presence).toBe('online');
+
+      // --role and --status filters narrow the directory; unmatched is empty.
+      const byRole = await runCli(['agents', '--role', 'qa', '--json'], { cwd: dir });
+      expect(byRole.code).toBe(0, byRole.stderr);
+      expect(JSON.parse(byRole.stdout).agents.map((a) => a.agentId)).toContain(AGENT_ID);
+
+      const byStatus = await runCli(['agents', '--status', 'idle', '--json'], { cwd: dir });
+      expect(byStatus.code).toBe(0, byStatus.stderr);
+      expect(JSON.parse(byStatus.stdout).agents.some((a) => a.agentId === AGENT_ID)).toBe(false);
+
+      const none = await runCli(['agents', '--role', 'nobody', '--json'], { cwd: dir });
+      expect(none.code).toBe(0, none.stderr);
+      expect(JSON.parse(none.stdout).agents).toEqual([]);
+
+      // Invalid filters are rejected client-side.
+      const badStatus = await runCli(['agents', '--status', 'asleep'], { cwd: dir });
+      expect(badStatus.code).not.toBe(0);
+      expect(badStatus.stderr).toContain('idle or busy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
