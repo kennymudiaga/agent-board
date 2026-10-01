@@ -21,6 +21,12 @@ export AB_ROLES=dev             # optional, comma-separated
 | `heartbeat` | Register/check in — presence, status busy/idle, currentTask, boards, roles. |
 | `send` | Drop a message: `agent:<id>` / `role:<role>` / `broadcast`; request/response/question/note/event; replyTo, priority, ttl, deadline, idempotencyKey. |
 | `read` | Pickup (atomically claims) with long-poll `wait`; optional auto-`ack`; returns the server watermark. |
+
+> **Resume discipline:** `read` returns the server `watermark` — the safe resume
+> point (spec §6.2). The MCP server is stateless per call, so the *agent* must
+> remember it and pass it back as `since` on the next `read` (the CLI persists
+> it for you; here it's your memory). Only finalized messages advance the
+> watermark — claimed-but-unacked mail redelivers after lease expiry.
 | `ack` | done / failed(+error) / claimed (lease renewal). |
 | `list_agents` | Directory with board/role/status filters. |
 | `list_boards` | Board directory with message counts. |

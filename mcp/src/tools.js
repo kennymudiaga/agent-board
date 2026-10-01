@@ -81,6 +81,9 @@ export const tools = {
     }),
     async handler(args) {
       const cfg = identity();
+      if (args.message !== undefined && args.payload !== undefined) {
+        return text({ error: 'use either message or payload, not both' });
+      }
       let payload;
       if (args.payload !== undefined) {
         try {

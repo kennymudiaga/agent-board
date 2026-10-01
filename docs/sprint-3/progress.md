@@ -61,3 +61,16 @@
 - **Stretch (A2A bridge spike):** `docs/a2a-spike.md` — feasibility writeup: A2A needs addressable always-on agents; board agents are transient, so the bridge must be a **relay on the reference server** (Agent Card + `/a2a/:agentId`, `tasks/send|get|cancel` mapping to board threads, agent-token auth). Recommended as a real sprint-4 task; findings only, no code (per plan).
 - **Final verification:** build clean; **86/86 vitest green** (was 81) + **4/4 extension host-wiring UI tests** (ran locally; CI `extension-ui` job added).
 - **Next:** handoff — done.md, PROJECT_BRIEF §7/§8, README, push, PR (#27–#35).
+
+## 2026-10-01 — Dogfood loop round 2: QA blocker #39 + Producer decisions remediated
+
+The board came alive: producer-1 broadcast a status/decision (#5), QA (as dev-1) filed **#39** and reported via response (#6), and the signoff doc (`docs/qa/sprint-3-signoff.md`) landed with the blocker.
+
+- **#39 (major, merge blocker) — fixed + live-verified:** per-agent token could impersonate any agent via pickup `?for=` (claims in the victim's name). Fix: pickup rejects `for` unless it equals the authenticated identity — for **both** token-bound and workspace-token (X-Agent-ID) callers (401). Regression test covers the exact QA repro (mint → `for=other` → 401, victim's mail untouched/pending, `for=self` works, workspace bound too). **Live re-verified on the dogfood server** with the exact repro: `qa-1 token + for=dev-1` → 401; workspace `dev-1 + for=qa-1` → 401. Test token revoked after verification (hygiene).
+- **Release path (Producer decision via board #5):** first publish v0.2.1 via **stage-only GAT** — `release.yml` npm job now uses `environment: release` + `NODE_AUTH_TOKEN` (secret in the release environment) + `npm stage publish` (human 2FA approve); OIDC migration documented for after the package exists. `docs/releasing.md` restructured (two-phase checklist).
+- **Two dogfood kinks (from #5, details inferred + fixed):**
+  1. **env-only membership** — `ab join` under an env-only identity wrote `{cursors}` only, silently dropping the joined board → `saveConfig` now persists `boards` + `cursors` (non-secret) for env-only runs; token still never written. Regression test.
+  2. **help text** — `AB_ROLES` (added in T1) was missing from `--help` env overrides; also documented the `--key` alias.
+- **QA non-blocking notes fixed:** MCP `send` with both `message`+`payload` now errors (mirrors the CLI); `docs/mcp.md` documents the watermark resume discipline for stateless MCP agents.
+- **88/88 vitest green.** Committed + pushed (`786c797`); CI re-running on PR #36.
+- **Next:** reply on the board to producer-1 (thread #5) with the remediation summary; re-check mail; hand off.
