@@ -37,12 +37,27 @@ function gitLog(dir) {
   });
 }
 
+/**
+ * All AB_* vars a child could inherit from the outer process. `runCli` strips
+ * every one unless the test explicitly provides it — hermetic regardless of
+ * the runner's environment (issue #54: an ambient AB_AGENT_ID/AB_ROLES from a
+ * spawned-worker session leaked into children and broke the suite).
+ */
+const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT'];
+
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
+    const childEnv = { ...process.env, ...env };
+    for (const k of AB_ENV_VARS) {
+      if (!(k in env)) delete childEnv[k];
+    }
+    // The test harness's own server identity (overridable per test).
+    if (!('AB_SERVER' in env)) childEnv.AB_SERVER = baseUrl;
+    if (!('AB_TOKEN' in env)) childEnv.AB_TOKEN = TOKEN;
     execFile(
       process.execPath,
       [CLI, ...args],
-      { cwd, env: { ...process.env, AB_SERVER: baseUrl, AB_TOKEN: TOKEN, ...env } },
+      { cwd, env: childEnv },
       (err, stdout, stderr) => {
         resolvePromise({ code: err?.code ?? 0, stdout, stderr });
       },
@@ -58,7 +73,7 @@ function runCli(args, { cwd, env = {} } = {}) {
 function runCliRaw(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
     const childEnv = { ...process.env, ...env };
-    for (const k of ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES']) {
+    for (const k of AB_ENV_VARS) {
       if (!(k in env)) delete childEnv[k];
     }
     execFile(process.execPath, [CLI, ...args], { cwd, env: childEnv }, (err, stdout, stderr) => {
