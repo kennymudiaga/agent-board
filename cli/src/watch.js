@@ -81,10 +81,12 @@ async function runActions(m, flags) {
   if (flags.opencode !== undefined) {
     const url = `${OPENCODE_SERVER}/session/${encodeURIComponent(String(flags.opencode))}/prompt_async`;
     const text = `[agentboard wake] message ${m.id} on ${m.board} from ${m.from}${m.replyTo ? ` (re: ${m.replyTo})` : ''}: ${env.AB_WATCH_TEXT}`;
+    // opencode server body shape (verified in the sprint 5 T2 spike): parts
+    // array; noReply=true for context-only injection.
     fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ parts: [{ type: 'text', text }], noReply: true }),
     }).catch((e) => process.stderr.write(`[watch] --opencode failed: ${e.message}\n`));
   }
   if (flags.notify) notify(env);
