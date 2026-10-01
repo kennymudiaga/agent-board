@@ -37,12 +37,27 @@ function gitLog(dir) {
   });
 }
 
+/**
+ * All AB_* vars a child could inherit from the outer process. `runCli` strips
+ * every one unless the test explicitly provides it — hermetic regardless of
+ * the runner's environment (issue #54: an ambient AB_AGENT_ID/AB_ROLES from a
+ * spawned-worker session leaked into children and broke the suite).
+ */
+const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT'];
+
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
+    const childEnv = { ...process.env, ...env };
+    for (const k of AB_ENV_VARS) {
+      if (!(k in env)) delete childEnv[k];
+    }
+    // The test harness's own server identity (overridable per test).
+    if (!('AB_SERVER' in env)) childEnv.AB_SERVER = baseUrl;
+    if (!('AB_TOKEN' in env)) childEnv.AB_TOKEN = TOKEN;
     execFile(
       process.execPath,
       [CLI, ...args],
-      { cwd, env: { ...process.env, AB_SERVER: baseUrl, AB_TOKEN: TOKEN, ...env } },
+      { cwd, env: childEnv },
       (err, stdout, stderr) => {
         resolvePromise({ code: err?.code ?? 0, stdout, stderr });
       },
@@ -58,7 +73,7 @@ function runCli(args, { cwd, env = {} } = {}) {
 function runCliRaw(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
     const childEnv = { ...process.env, ...env };
-    for (const k of ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES']) {
+    for (const k of AB_ENV_VARS) {
       if (!(k in env)) delete childEnv[k];
     }
     execFile(process.execPath, [CLI, ...args], { cwd, env: childEnv }, (err, stdout, stderr) => {
@@ -838,6 +853,32 @@ describe('ab CLI against the reference server', () => {
       }
     } finally {
       rmSync(gh.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('env identity never clobbers an existing local config (spawn workers share the cwd)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir); // deliberate local identity (cli-agent / qa,dev)
+      // A spawned worker runs in the same cwd with an env identity (the
+      // `ab spawn` shape: child env carries AB_AGENT_ID/AB_ROLES).
+      const workerEnv = { AB_AGENT_ID: 'qa-4a0b27', AB_ROLES: 'qa' };
+      // Heartbeat first: the worker's session identity works (env-scoped) and
+      // registers the board server-side.
+      const hb = await runCli(['heartbeat', '--interval', '15', '--board', 'sprint-7', '--once'], { cwd: dir, env: workerEnv });
+      expect(hb.code).toBe(0, hb.stderr);
+      expect(hb.stdout).toContain('qa-4a0b27');
+      const joined = await runCli(['join', '--board', 'sprint-7'], { cwd: dir, env: workerEnv });
+      expect(joined.code).toBe(0, joined.stderr);
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir, env: workerEnv });
+      expect(read.code).toBe(0, read.stderr);
+
+      // The workspace config keeps the DELIBERATE identity — not the worker's.
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg).toMatchObject({ agentId: AGENT_ID, roles: ['qa', 'dev'], server: baseUrl, token: TOKEN });
+      expect(cfg.boards).toContain('sprint-7'); // membership still persisted
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

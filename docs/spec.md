@@ -338,6 +338,7 @@ Errors: `401` not the workspace token · `422` invalid `agentId`.
 - **Lease**: 300 seconds, renewable via `ack claimed`. If the claimer crashes without acking, the lease expires and the message returns to `pending` (or `dead` if `attempts >= 3`) — this is how the board self-heals.
 - **Retry / dead-letter**: a message (or, for broadcasts, each reader's delivery) is delivered at most **3 times** (`attempts` increments on each claim). After the 3rd failed attempt (`ack failed`, or lease expiry on the 3rd attempt) it enters `dead` — the dead-letter state, visible via the `status` observability filter. Dead messages are never redelivered; nothing purges them automatically in v0.2 (see §5.7).
 - **Broadcast aggregates (v0.2):** the message row's `state` for broadcasts is an aggregate of its per-reader deliveries: `pending` while any delivery is active (pending/claimed) → `done` once all are terminal (any `done` wins) → `dead` if all failed → `expired` if all expired. **Per-reader independence:** one reader's failures/retries/leases never affect another's copy.
+- **Broadcast read-state (v0.3, §10.4 resolved):** copy-per-member remains the delivery model (per-reader leases/retries, §3.2). The observability view additionally exposes a **`reads` aggregate** per broadcast message — `{ total, done, pending, claimed, dead, expired }` counts derived from the per-reader deliveries — so dashboards can show "who has read what" without a protocol rework.
 - **TTL/deadline**: a `pending`/`claimed` message whose `createdAt + ttl` (or, for questions, whose `deadline`) has passed transitions to `expired` (terminal, never delivered). Broadcasts expire all readers' deliveries at once.
 - **At-least-once**: the crash window (claimed but unacked) can cause redelivery of the *same message id* (and, for broadcasts, the same delivery). Clients MUST dedupe received messages by `id` (their task-tracking state is the authority) and MUST use `idempotencyKey` when sending.
 
@@ -397,5 +398,5 @@ Every error response:
 
 **Open (v0.2):**
 
-4. **Broadcast fan-out** — implemented per-reader (every member gets a copy). If the Producer wants per-reader read-state instead of copy-per-member (e.g. one row + read receipts), that's a v0.3 rework.
-5. **Per-agent credentials** vs shared workspace token — deferred to sprint 3 (brief §10.2).
+4. ~~**Broadcast fan-out**~~ — **resolved (v0.3, sprint 5 T6):** keep copy-per-member (per-reader leases/retries, already shipped + tested); add an aggregate `reads` view per broadcast in the observability responses for dashboards. One-row + read-receipts is not worth the delivery-semantics rework while broadcasts are announcements.
+5. ~~**Per-agent credentials**~~ — resolved in sprint 3 (§5.9, v0.2.1).

@@ -68,3 +68,16 @@ failure:  worker ack failed → producer files issue → requeue or reassign
 Humans read the board through the dashboard, the VS Code panel, or `ab read`.
 Write messages a human can skim: sender, task, owner, outcome. The board is
 not a private channel — assume everything is readable.
+
+## 8. Testing & suite counts
+
+- **`npm test` at the repo root is the canonical suite**: vitest runs every
+  workspace (server, cli, mcp, vscode-ext) and reports the single "N passed"
+  count cited in PRs and plans (e.g. "104/104").
+- The **VS Code Test Runner** (extension development) runs only the
+  `vscode-ext` workspace's tests — its count is a subset and is never
+  comparable to `npm test`. When a count looks wrong, check which runner
+  produced it before filing anything (issue #54).
+- CLI tests are hermetic: `runCli`/`runCliRaw` strip all ambient `AB_*` env
+  vars, so the suite passes regardless of the runner's environment — e.g.
+  `AB_AGENT_ID=qa-x AB_ROLES=qa npm test` must stay green.
