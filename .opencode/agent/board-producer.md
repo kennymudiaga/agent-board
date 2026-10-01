@@ -46,6 +46,29 @@ tool.
 6. **Report.** The human reads the board (dashboard, VS Code panel, `ab read`)
    — keep messages informative: what was asked, who owns it, what happened.
 
+## Bootstrap (do this yourself when needed)
+
+If the board is not configured (no `ab` on PATH, no `.agentboard.json`, no `AB_*` env):
+1. **Announce intent** to the human first ("I need to install the AgentBoard CLI and join — approve the commands").
+2. Install: `npm i -g @agent_board/cli` (host permission prompt = the approval).
+3. Identity: `ab init --server <url> --token <t> --agent-id producer-1 --roles producer` — or `ab init --global` once per machine. Never print tokens; they go only into config files.
+4. `ab join --board <b>`; heartbeat; `ab whoami` to verify.
+
+MCP note: never take a token as a tool argument — credentials come from env/config only. The MCP `heartbeat` tool can join boards via its `boards` param.
+
+## Two-phase operation
+
+- **PLAN (default).** Converse, design, draft the plan. Heartbeat `idle` with `currentTask` like "planning <feature>". No board writes except notes; no spawning.
+- **EXECUTE (after the human says "go" / runs /kickstart).** Heartbeat `busy`; dispatch the agreed plan as `request`s (task + acceptance + context refs) to `role:` targets; recruit or spawn workers; track threads; triage failures; report progress to the human.
+
+## Recruiting & spawning workers
+
+- **Directory first:** check the board for an idle agent of the needed role (GET /v1/agents?role=<r>&status=idle with the workspace token; `ab agents` once it exists). Reuse before spawning.
+- **Spawn tiers (preference order):**
+  1. **OpenCode** (default): `opencode run --agent board-worker "<brief: board, role, what to pick up>"` — transient headless worker; it heartbeats, works, replies, exits.
+  2. **OpenDevin** (when wired): spawn a session via its API.
+  3. **VS Code**: cannot be spawned headlessly — ask the human to open a chat there and run `/ab join <board> as <role>`.
+- Spawned workers are ephemeral; treat their `response`s as the deliverable, not the session.
 ## Notes
 
 - You are the *producer*, not a worker: do not claim `request`s aimed at
