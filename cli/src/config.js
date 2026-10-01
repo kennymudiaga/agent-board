@@ -74,6 +74,18 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     tokenFromEnv: process.env.AB_TOKEN !== undefined,
     tokenFromGlobal: process.env.AB_TOKEN === undefined && typeof file.token !== 'string' && typeof global.token === 'string',
     fileToken: typeof file.token === 'string' ? file.token : undefined,
+    // The identity fields as stored in the LOCAL file (before env/global
+    // overrides). saveConfig persists exactly these — a session whose identity
+    // came from env (e.g. an `ab spawn` worker sharing the spawner's cwd) must
+    // never clobber the workspace's deliberate identity with its own.
+    fileValues: {
+      server: typeof file.server === 'string' ? file.server : undefined,
+      token: typeof file.token === 'string' ? file.token : undefined,
+      agentId: typeof file.agentId === 'string' ? file.agentId : undefined,
+      provider: file.provider ?? undefined,
+      roles: Array.isArray(file.roles) ? file.roles : undefined,
+      spawn: file.spawn && typeof file.spawn === 'object' ? file.spawn : undefined,
+    },
     server: process.env.AB_SERVER ?? file.server ?? global.server,
     token: process.env.AB_TOKEN ?? file.token ?? global.token,
     agentId: process.env.AB_AGENT_ID ?? file.agentId ?? global.agentId,
@@ -87,21 +99,21 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
 }
 
 export function saveConfig(cfg) {
-  // Env-only runs (no pre-existing config file) persist cursors + boards and
-  // nothing else — boards are non-secret operational state (`ab join` must
-  // survive the process), but a token from AB_TOKEN must never reach disk
-  // (issue #25). When a stored token exists, keep it even if AB_TOKEN is set
-  // for this session (issue #26 — never erase deliberate config). A token
-  // resolved from the global config is equally never copied into a repo file
-  // (issue #41 — one token, one file).
+  // Only the local file's OWN values are ever persisted — plus non-secret
+  // operational state (boards, cursors). Identity fields that this session
+  // resolved from env or the global config are session-scoped and must never
+  // overwrite the workspace's deliberate config (issue #25/#26/#41; dogfood:
+  // `ab spawn` workers share the spawner's cwd and would otherwise clobber
+  // its identity on every read/join).
   const payload = cfg.fromEnv
     ? { boards: cfg.boards, cursors: cfg.cursors }
     : {
-        server: cfg.server,
-        token: cfg.fileToken ?? (cfg.tokenFromEnv || cfg.tokenFromGlobal ? undefined : cfg.token),
-        agentId: cfg.agentId,
-        provider: cfg.provider ?? undefined,
-        roles: cfg.roles,
+        ...(cfg.fileValues.server !== undefined ? { server: cfg.fileValues.server } : {}),
+        ...(cfg.fileValues.token !== undefined ? { token: cfg.fileValues.token } : {}),
+        ...(cfg.fileValues.agentId !== undefined ? { agentId: cfg.fileValues.agentId } : {}),
+        ...(cfg.fileValues.provider !== undefined ? { provider: cfg.fileValues.provider } : {}),
+        ...(cfg.fileValues.roles !== undefined ? { roles: cfg.fileValues.roles } : {}),
+        ...(cfg.fileValues.spawn !== undefined ? { spawn: cfg.fileValues.spawn } : {}),
         boards: cfg.boards,
         cursors: cfg.cursors,
       };
