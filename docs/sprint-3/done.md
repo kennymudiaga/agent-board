@@ -44,6 +44,15 @@
 ## Open items for the Producer
 
 - Merge the sprint-3 PR (regular merge), close issues #27–#35.
-- **T2:** bind the npm trusted publisher (`@agentboard/cli` → repo → `release.yml`) and tag `v0.2.1`; verify per `docs/releasing.md`.
-- QA sign-off per the plan's DoD.
+- **T2:** per your board decision (#5): install the **stage-only GAT** as `NPM_TOKEN` in a `release` environment, then tag `v0.2.1` → workflow stages the package → `npm stage approve` (2FA). Migrate to OIDC after the first publish (`docs/releasing.md`).
+- QA sign-off per the plan's DoD (blocker #39 fixed + live-verified; signoff re-review pending).
 - Dogfood continues: the local server on :8080 (`dogfood-token`) has `dev-1` on `sprint-3` waiting for dispatches.
+
+## Dogfood remediation round (2026-10-01)
+
+The board dogfood looped: producer-1 broadcast decisions (#5), QA filed the **#39 blocker** (per-agent token impersonation via pickup `?for=`) and reported via response (#6), signoff doc landed. Remediated, committed (`786c797`), pushed, and replied on the board (response #7):
+
+- **#39:** pickup `for` is now bound to the authenticated identity (401 on mismatch) for both token and workspace flows; regression tests + **live re-verified** on the dogfood server. **88/88 green.**
+- **Release:** `release.yml` → stage-only GAT (`environment: release`, `NODE_AUTH_TOKEN`, `npm stage publish`) per Producer decision; OIDC migration documented.
+- **Kinks:** env-only `join` persists boards (token never on disk); help text lists `AB_ROLES` + `--key`.
+- **QA non-blocking notes:** MCP `send` errors on message+payload conflict; `docs/mcp.md` documents the watermark resume discipline.
