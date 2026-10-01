@@ -87,6 +87,8 @@ export interface MessageRecord {
   delivery?: DeliveryRecord;
   /** Broadcast only: all per-reader deliveries (observability responses). */
   deliveries?: DeliveryRecord[];
+  /** Broadcast only (observability): read-state aggregate derived from deliveries (sprint 5 T6). */
+  reads?: BroadcastReads;
 }
 
 export interface DeliveryRecord {
@@ -97,6 +99,20 @@ export interface DeliveryRecord {
   leaseExpiresAt: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Broadcast read-state aggregate (sprint 5 T6, spec §6.1): counts of the
+ * per-reader deliveries by state, for dashboards ("who has read this").
+ * Derived from the copy-per-member deliveries — no protocol rework.
+ */
+export interface BroadcastReads {
+  total: number;
+  done: number;
+  pending: number;
+  claimed: number;
+  dead: number;
+  expired: number;
 }
 
 export interface AgentFilters {
@@ -230,7 +246,16 @@ function toDelivery(r: DeliveryRow): DeliveryRecord {
   };
 }
 
+function aggregateReads(deliveries: DeliveryRecord[]): BroadcastReads {
+  const reads: BroadcastReads = { total: deliveries.length, done: 0, pending: 0, claimed: 0, dead: 0, expired: 0 };
+  for (const d of deliveries) {
+    if (d.state in reads) reads[d.state as keyof BroadcastReads] += 1;
+  }
+  return reads;
+}
+
 function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveries?: DeliveryRecord[] }): MessageRecord {
+  const deliveries = extras?.deliveries;
   return {
     id: r.id,
     board: r.board,
@@ -252,7 +277,7 @@ function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveri
     createdAt: new Date(r.created_at).toISOString(),
     updatedAt: new Date(r.updated_at).toISOString(),
     ...(extras?.delivery !== undefined ? { delivery: extras.delivery } : {}),
-    ...(extras?.deliveries !== undefined ? { deliveries: extras.deliveries } : {}),
+    ...(deliveries !== undefined && r.to_kind === 'broadcast' ? { deliveries, reads: aggregateReads(deliveries) } : {}),
   };
 }
 
