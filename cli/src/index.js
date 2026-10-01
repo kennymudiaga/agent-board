@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -41,6 +41,8 @@ commands:
              ab token --agent-id <id> [--revoke]
   whoami     show this agent's identity and configuration
              ab whoami [--json]
+  agents     list the agent directory (roles/status/presence; offline included)
+             ab agents [--board <name>] [--role <role>] [--status idle|busy] [--json]
 
 global options:
   --json     machine-readable JSON on stdout
@@ -89,6 +91,7 @@ const COMMANDS = {
   archive: cmdArchive,
   token: cmdToken,
   whoami: cmdWhoami,
+  agents: cmdAgents,
 };
 
 async function main() {
