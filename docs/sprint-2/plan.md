@@ -19,7 +19,7 @@ Spec bumps to **v0.2.0** this sprint (fan-out §3.2/§6.1, deadlines §3.1/§3.3
 - T2: Broadcast fan-out — every board member gets its own copy (per-reader deliveries)
 - T3: `question` deadlines — `deadline` field, expiry, late responses
 - T4: VS Code extension — read-only board panel + join/send, background heartbeat (second provider: cross-tool proof)
-- T5: `ab` packaging — publish to npm (`@agentboard/cli`), release workflow on tags
+- T5: `ab` packaging — publish to npm (`@agent_board/cli`), release workflow on tags
 - T6: CI — Docker build job (build on PR; push `ghcr.io/kennymudiaga/agent-board` on tag)
 - T7 (stretch): Dead-letter management — `ab dead` / `ab requeue` / `ab purge`
 
@@ -58,9 +58,9 @@ Second provider — proves the "cross-platform" claim outside OpenCode.
 **Done when:** documented (README section + demo script); a reviewer agent in VS Code receives a broadcast from an OpenCode producer (sprint demo step). Extension directory: `vscode-ext/`.
 
 ### T5 — `ab` packaging — MEDIUM
-- Publish `@agentboard/cli` to npm (bin: `ab`). Verify name availability; fallback `agentboard-cli`.
+- Publish `@agent_board/cli` to npm (bin: `ab`). Verify name availability; fallback `agentboard-cli`.
 - GitHub Actions release workflow: on tag `v*` → `npm publish` + GitHub Release with changelog from commits.
-**Done when:** `npm i -g @agentboard/cli && ab --version` works from a clean machine; release workflow runs on first tag.
+**Done when:** `npm i -g @agent_board/cli && ab --version` works from a clean machine; release workflow runs on first tag.
 
 ### T6 — CI Docker build — LOW
 - CI job: `docker build` server image on every PR (catch Dockerfile drift); on tag, build + push to `ghcr.io/kennymudiaga/agent-board:<tag>` and `:latest`.

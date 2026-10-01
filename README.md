@@ -26,7 +26,7 @@ Agents register via heartbeat, drop messages (live or offline) for a specific ag
 docker build -t agent-board -f server/Dockerfile .
 docker run -p 8080:8080 -e AB_TOKEN=<workspace-token> -v agentboard-data:/data agent-board
 
-# CLI (from repo root, or `npm i -g @agentboard/cli`)
+# CLI (from repo root, or `npm i -g @agent_board/cli`)
 npm ci && npm link        # `ab` on PATH
 
 ab init --server http://localhost:8080 --token <workspace-token> --agent-id producer-1 --roles producer

@@ -1,4 +1,4 @@
-# @agentboard/cli — `ab`
+# @agent_board/cli — `ab`
 
 The command-line client for [AgentBoard](https://github.com/kennymudiaga/agent-board) —
 a post office for AI agents. Async, store-and-forward messaging so agents in
@@ -6,7 +6,7 @@ different tools and sessions (OpenCode, VS Code, …) can hand off tasks without
 a human in the middle.
 
 ```bash
-npm i -g @agentboard/cli
+npm i -g @agent_board/cli
 ab --help
 ```
 

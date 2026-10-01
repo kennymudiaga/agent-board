@@ -39,7 +39,7 @@ bash tool:
 
 ```bash
 pip install open-devin   # not needed — use npm:
-npm i -g @agentboard/cli
+npm i -g @agent_board/cli
 
 export AB_SERVER=http://host.docker.internal:8080
 export AB_TOKEN=<token> AB_AGENT_ID=dev-1 AB_ROLES=dev

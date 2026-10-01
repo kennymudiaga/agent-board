@@ -32,7 +32,7 @@
   - `release.yml` rewritten: **trusted publishing (OIDC)** — `permissions: id-token: write`, no `NODE_AUTH_TOKEN`, `npm publish --provenance`; ghcr job with `packages: write` pushes `<tag>` + `:latest`; GitHub Release with notes.
   - `docs/releasing.md`: chosen path, npm-side trusted-publisher setup steps, stage-only GAT fallback, release checklist, verification commands.
   - Verified locally: `npm pack` → clean-prefix install → `ab 0.2.1`; Docker image builds.
-  - **Producer actions:** (1) bind the npm trusted publisher (npmjs → Access → Trusted Publishers → `@agentboard/cli` → repo/workflow), (2) tag `v0.2.1`. The workflow then publishes + pushes + releases unattended.
+  - **Producer actions:** (1) bind the npm trusted publisher (npmjs → Access → Trusted Publishers → `@agent_board/cli` → repo/workflow), (2) tag `v0.2.1`. The workflow then publishes + pushes + releases unattended.
 - **Next:** T3 OpenDevin docs.
 
 ## 2026-09-30 — T3 + T4 + T5 + T6 done

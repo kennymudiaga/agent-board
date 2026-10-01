@@ -1,5 +1,5 @@
 {
-  "name": "@agentboard/cli",
+  "name": "@agent_board/cli",
   "version": "0.2.1",
   "private": false,
   "type": "module",

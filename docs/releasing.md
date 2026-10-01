@@ -8,84 +8,89 @@ The sprint ships one release. Version numbers live in `package.json` files
 (root, `cli/`, `server/`, `mcp/`, `vscode-ext/`) and the protocol version in
 `docs/spec.md` — keep them in sync. A release is a `vX.Y.Z` tag on `main`.
 
-## Release flow (fully automated on tag)
+## Release flow (tag-triggered)
 
-Tag `v0.2.1` (e.g. `git tag v0.2.1 && git push origin v0.2.1`) triggers
+Tag `v0.2.1` (for example, `git tag v0.2.1 && git push origin v0.2.1`) triggers
 `.github/workflows/release.yml`:
 
-1. `npm-publish` — build + test, then `npm publish --workspace cli --access
-   public --provenance` via **trusted publishing (OIDC)** — no token in the
-   repo or workflow.
+1. `npm-publish` — build + test, then the one-time bootstrap publish of
+   `@agent_board/cli` using the publish-and-stage GAT in the `release`
+   environment.
 2. `ghcr-push` — builds the server image and pushes
    `ghcr.io/kennymudiaga/agent-board:<tag>` + `:latest`.
-3. `github-release` — GitHub Release with auto-generated notes.
+3. `github-release` — creates a GitHub Release with generated notes.
 
-## Trusted publishing (chosen path — after first publish)
+## First publish: publish-and-stage GAT
 
-npm has removed classic tokens; direct publish with bypass-2FA GATs dies
-January 2027. **Trusted publishing (OIDC) is the long-term path** — no token
-at all — but npm requires the package to already exist on the registry before
-a trusted publisher can be bound. So:
+`@agent_board/cli` is the first package in the new `agent_board` organization
+scope. For this bootstrap only, use a Granular Access Token with **Read and
+write (publish and stage)** and **Bypass 2FA** enabled:
 
-- **First publish (v0.2.1): stage-only GAT** (below) creates `@agentboard/cli`
-  on the registry.
-- **Then:** bind the trusted publisher (below) and switch the workflow back to
-  OIDC (`id-token: write`, no token, `npm publish --provenance`).
+1. Store the token as `NPM_TOKEN` in the GitHub `release` environment.
+2. The workflow runs `npx --yes npm@12 publish --workspace cli --access public`.
+3. Review the package at `https://www.npmjs.com/package/@agent_board/cli`.
+4. If npm presents an approval prompt, approve it interactively with 2FA.
 
-### Binding the trusted publisher (after first publish)
+The token is used only to bootstrap the first package. Do not use it for
+routine releases; bypass-2FA direct publishing is being deprecated. Revoke it
+after the bootstrap and replace it with the chosen long-term path below.
 
-1. Go to npmjs.com → account → **Access → Trusted Publishers → Add publisher**.
-2. Configure:
-   - **Provider:** GitHub Actions
-   - **Package:** `@agentboard/cli`
-   - **Owner:** `kennymudiaga`
-   - **Repository:** `agent-board`
-   - **Workflow:** `release.yml` (restricts publishing to the release workflow)
-   - **Environments:** `release`
-3. Switch `release.yml`'s npm job to OIDC: drop `NODE_AUTH_TOKEN`, add
-   `permissions: { id-token: write }`, publish with `--provenance`.
+## Future releases
 
-### Stage-only GAT (first publish, current)
+### Preferred: trusted publishing (OIDC)
 
-A **stage-only Granular Access Token** (scope: `@agentboard/cli`, "stage only" —
-never direct publish):
+After `@agent_board/cli` exists on npm, configure the trusted publisher from
+the package's npm access/settings page:
 
-1. Create the GAT on npmjs.com → install as repo secret `NPM_TOKEN` in a
-   `release` **environment** (Settings → Environments → release → secrets).
-2. The workflow's npm job already runs with `environment: release` and
-   `npm stage publish` — the package lands **staged**.
-3. A human approves with 2FA: `npm stage approve` (or the npmjs.com UI).
-4. `npm stage promote` (or the UI) makes it live.
+- Provider: GitHub Actions
+- Package: `@agent_board/cli`
+- Owner: `kennymudiaga`
+- Repository: `agent-board`
+- Workflow: `release.yml`
+- Environment: `release`
 
-This keeps a human in the loop per release and never creates a long-lived
-direct-publish token.
+Then change the npm job to add `id-token: write`, remove `NODE_AUTH_TOKEN`,
+and run `npm publish --workspace cli --access public --provenance`.
+No long-lived npm token is needed.
+
+### Alternative: stage-only GAT
+
+For a human approval gate on every release, create a GAT scoped to
+`@agent_board/cli` with **Read and write — stage only**:
+
+1. Store it as `NPM_TOKEN` in the `release` environment.
+2. Run `npx --yes npm@12 stage publish --workspace cli --access public`.
+3. Review with `npm stage list` / `npm stage view <stage-id>` or the npm UI.
+4. Approve with 2FA using `npm stage approve <stage-id>`.
 
 ## Verify after a release
 
 ```bash
 # clean machine
-npm i -g @agentboard/cli && ab --version   # → ab 0.2.1
+npm i -g @agent_board/cli && ab --version   # → ab 0.2.1
 docker pull ghcr.io/kennymudiaga/agent-board:v0.2.1
 
-# provenance
-npm view @agentboard/cli@0.2.1 --json | grep -i provenance
+# package metadata
+npm view @agent_board/cli@0.2.1 --json
 ```
 
 ## Account-owner checklist
 
-**For the first publish (v0.2.1):**
+**Bootstrap v0.2.1:**
 
-- [ ] Create a **stage-only** GAT scoped to `@agentboard/cli`
-- [ ] Create the `release` environment (Settings → Environments) and install the GAT as `NPM_TOKEN`
-- [ ] Tag `v0.2.1` → workflow stages the package → run `npm stage approve` (2FA) to publish
-- [ ] ghcr: image auto-pushes via the workflow (`packages: write`); make the package public or verify with an authenticated pull
+- [x] Create `agent_board` organization/scope
+- [x] Create publish-and-stage GAT with `@agent_board` package/scope access
+- [x] Create `release` environment and add `NPM_TOKEN`
+- [ ] Tag `v0.2.1`
+- [ ] Review/approve the package with 2FA if npm presents the approval gate
 
-**After the first publish (migrate to OIDC):**
+**After bootstrap:**
 
-- [ ] Bind the trusted publisher: `@agentboard/cli` → `kennymudiaga/agent-board` → `release.yml` → environment `release`
-- [ ] Switch the npm job to OIDC (`id-token: write`, `--provenance`, drop `NODE_AUTH_TOKEN`); optionally delete the GAT
+- [ ] Revoke the publish-and-stage GAT
+- [ ] Bind trusted publishing for `@agent_board/cli`, or create a stage-only GAT
+- [ ] Update `release.yml` to the selected routine-release path
 
 ## CI parity
 
-`ci.yml` runs build + tests + a Docker build on every PR (the Docker job
-catches Dockerfile drift before it reaches a tag).
+`ci.yml` runs build + tests + a Docker build on every PR. The Docker job
+catches Dockerfile drift before it reaches a tag.

@@ -89,14 +89,14 @@ DELETE /v1/tokens/{agentId}             # revoke per-agent token (workspace toke
 
 - **Option A (chosen):** hosted REST board — small reference server, SQLite, Docker self-host (`ghcr.io/kennymudiaga/agent-board` on tags).
 - **Rejected:** file/git-based store (conflict-prone, slow) and pub/sub broker (needs persistent connections).
-- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps, published as `@agentboard/cli` (bin `ab`). MCP: official `@modelcontextprotocol/sdk`, stdio, 9 tools.
+- Stack (confirmed): TypeScript, Hono, better-sqlite3, vitest, Docker. CLI: plain JS, zero runtime deps, published as `@agent_board/cli` (bin `ab`). MCP: official `@modelcontextprotocol/sdk`, stdio, 9 tools.
 
 ## 7. Current Status
 
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
 - **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11).
 - **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark; broadcast fan-out; `question` deadlines; VS Code extension; npm packaging + release workflow; CI Docker build; dead-letter management. 69 tests green after QA remediation (#21–#26); cross-tool demo executed.
-- **Sprint 3 (SHIPPED — PR #36 merged, QA-signed):** spec **v0.2.1**. `agentboard-mcp` universal tool layer (9 tools, stdio, env-only, never writes config); `GET /v1/boards` (§5.8); `AB_ROLES`; OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (§5.9, identity bound to token — incl. pickup `?for=` after QA blocker #39); dogfooding on the board caught #37–#39 (all fixed, live-verified); A2A bridge spike. **88 vitest + 4 extension UI tests; CI 3/3 green.** Release **v0.2.1** prepared: `release.yml` on the **stage-only GAT** path (`environment: release` + `npm stage publish` → human 2FA approval), OIDC/trusted-publishing migration documented for after the first publish. **Pending: tag `v0.2.1` → stage → approve.**
+- **Sprint 3 (SHIPPED — PR #36 merged, QA-signed):** spec **v0.2.1**. `agentboard-mcp` universal tool layer (9 tools, stdio, env-only, never writes config); `GET /v1/boards` (§5.8); `AB_ROLES`; OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (§5.9, identity bound to token — incl. pickup `?for=` after QA blocker #39); dogfooding on the board caught #37–#39 (all fixed, live-verified); A2A bridge spike. **88 vitest + 4 extension UI tests; CI 3/3 green.** Release **v0.2.1** prepared: first-publish bootstrap uses the owned `@agent_board` scope and publish-and-stage GAT; subsequent releases migrate to stage-only or OIDC. **Pending: rename/tag v0.2.1 → publish → verify.**
 
 ## 8. Roadmap
 

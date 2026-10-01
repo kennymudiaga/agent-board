@@ -49,12 +49,12 @@ with bypass-2FA GATs is **removed January 2027**. Preferred: **trusted
 publishing (OIDC)** — no token at all.
 
 - **Primary: trusted publishing.** Account owner configures the npm-side
-  trusted publisher for `@agentboard/cli` bound to `kennymudiaga/agent-board`
+  trusted publisher for `@agent_board/cli` bound to `kennymudiaga/agent-board`
   (GitHub Actions; restrict to the release workflow / tag refs if supported).
   Workflow changes: add `permissions: { id-token: write }`, drop
   `NODE_AUTH_TOKEN`, publish with `--provenance`.
 - **Fallback (if trusted publishing is not yet available on the account):**
-  Granular Access Token scoped to `@agentboard/cli`:
+  Granular Access Token scoped to `@agent_board/cli`:
   - *Today:* **Read and write (publish and stage)** + **Bypass 2FA** — fully
     unattended; but direct publish dies January 2027, so pair it with a
     migration task.
@@ -65,7 +65,7 @@ publishing (OIDC)** — no token at all.
 - Tag `v0.2.0` → release workflow: build + test, publish (path above), ghcr
   push (`ghcr.io/kennymudiaga/agent-board:v0.2.0` + `:latest`), GitHub
   Release with notes.
-- Verify on a clean machine: `npm i -g @agentboard/cli && ab --version`;
+- Verify on a clean machine: `npm i -g @agent_board/cli && ab --version`;
   `docker pull ghcr.io/kennymudiaga/agent-board:v0.2.0`.
 
 **Done when:** package and image public via the chosen path, release notes
@@ -120,7 +120,7 @@ breaking the native module. Fix before runners move to npm v12:
 - Run `npm approve-scripts --allow-scripts-pending` in `server/`, commit the
   resulting allowlist (package.json), and verify `npm ci` + build + tests.
 - Verify the Docker build (node:22 image) still boots with the allowlist.
-- Consumers of `@agentboard/cli` are unaffected — the CLI is zero-dependency
+- Consumers of `@agent_board/cli` are unaffected — the CLI is zero-dependency
   (no lifecycle scripts).
 
 **Done when:** clean `npm ci` + tests under npm v12 defaults; Docker job green.
@@ -133,7 +133,7 @@ breaking the native module. Fix before runners move to npm v12:
 3. A second OpenCode session (qa) picks it up **via MCP tools**, acks, works,
    replies.
 4. VS Code extension sidebar shows presence + the thread live.
-5. `npm i -g @agentboard/cli` on a clean machine; `ab whoami` against the
+5. `npm i -g @agent_board/cli` on a clean machine; `ab whoami` against the
    public server URL (or local); `docker pull` the ghcr image.
 6. No human paste between steps 2–4.
 

@@ -140,7 +140,7 @@ message per line).
 ## Running from anywhere
 
 ```bash
-npm i -g @agentboard/mcp   # not yet published — use the repo path for now
+npm i -g @agent_board/mcp   # not yet published — use the repo path for now
 agentboard-mcp
 ```
 

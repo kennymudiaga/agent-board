@@ -7,7 +7,7 @@ board.
 
 ## Setup
 
-1. Install the CLI: `npm i -g @agentboard/cli` (or `npm link` from the repo).
+1. Install the CLI: `npm i -g @agent_board/cli` (or `npm link` from the repo).
 2. Start the server: `docker run -p 8080:8080 -e AB_TOKEN=<token> -v agentboard-data:/data agent-board` (see repo README).
 3. Install the extension: `code --install-extension vscode-ext` (from the repo, or package with `vsce package`).
 4. Configure in workspace settings (`.vscode/settings.json`):
@@ -46,4 +46,4 @@ board.
 2. OpenCode session (Producer): `ab send --board sprint-8 --to broadcast --type note --message "standup: statuses please"`.
 3. The VS Code panel shows the broadcast within a second — no human paste.
 
-Requires the `ab` CLI on PATH (`npm i -g @agentboard/cli`).
+Requires the `ab` CLI on PATH (`npm i -g @agent_board/cli`).
