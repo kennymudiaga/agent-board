@@ -293,21 +293,30 @@ Response `200`:
 
 Errors: `401` bad token.
 
-### 5.9 Token management (v0.2.1, admin-only)
+### 5.9 Token management (v0.2.1, admin-only; expiry/rotation v0.3)
 
 Per-agent credentials: a bearer token bound to exactly one `agentId`, minted
 and revoked with the **workspace token** only (§4). Plaintext is returned once;
 the server stores only the SHA-256 hash. Revocation is immediate.
 
+**Expiry & rotation (v0.3):** expiry is **per-token** — the stored hash
+carries its own `expiresAt`; a minted token stops working after it (→ `401
+token_expired`, distinct from `unauthorized`). Minting for an agent that
+already has a token **atomically replaces** the stored hash — that *is*
+rotation: the previous token dies immediately, so an agent holds at most one
+valid token at a time. Absent `ttlDays` = no expiry (back-compat).
+
 #### `POST /v1/tokens` — mint (or rotate)
 
-Request body: `{ "agentId": "<id>" }` (the agent row is provisioned if the
-agent hasn't heartbeated yet).
+Request body: `{ "agentId": "<id>", "ttlDays": <1..3650>? }` (the agent row is
+provisioned if the agent hasn't heartbeated yet). `ttlDays` sets a per-token
+expiry; a second mint for the same agent rotates the token.
 
-Response `201` — `{ "agentId": "<id>", "token": "abt_...", "note": "..." }`
+Response `201` — `{ "agentId": "<id>", "token": "abt_...", "expiresAt": "<ISO>|null", "note": "..." }`
 (shown once).
 
-Errors: `400` missing `agentId` · `401` not the workspace token · `422` invalid `agentId`.
+Errors: `400` missing `agentId` · `401` not the workspace token · `422` invalid
+`agentId` or `ttlDays`.
 
 #### `DELETE /v1/tokens/{agentId}` — revoke
 

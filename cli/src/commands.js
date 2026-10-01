@@ -421,7 +421,7 @@ export async function cmdWhoami(flags, json) {
 export async function cmdToken(flags, json) {
   const cfg = loadConfig();
   const agentId = flags.agentId ?? flags._[0];
-  if (!agentId) usage('token requires --agent-id', 'ab token --agent-id qa-1   (needs the workspace token; admin-only)');
+  if (!agentId) usage('token requires --agent-id', 'ab token --agent-id qa-1 [--ttl-days <n>] [--rotate] [--revoke]   (needs the workspace token; admin-only)');
   if (flags.revoke) {
     await apiCall(cfg, 'DELETE', `/v1/tokens/${agentId}`, { agent: cfg.agentId });
     if (json) {
@@ -431,12 +431,23 @@ export async function cmdToken(flags, json) {
     }
     return;
   }
-  const data = await apiCall(cfg, 'POST', '/v1/tokens', { body: { agentId } });
+  // ttlDays = per-token expiry (sprint 5 T5). --rotate is explicit intent:
+  // minting already atomically replaces the stored hash, so the previous
+  // token dies the moment this one is minted.
+  const body = { agentId };
+  if (flags.ttlDays !== undefined) {
+    const ttl = Number(flags.ttlDays);
+    if (!Number.isInteger(ttl) || ttl < 1 || ttl > 3650) usage('--ttl-days must be an integer in 1..3650');
+    body.ttlDays = ttl;
+  }
+  const data = await apiCall(cfg, 'POST', '/v1/tokens', { body });
   if (json) {
     console.log(JSON.stringify(data));
   } else {
     console.log(`token for ${agentId}: ${data.token}`);
+    if (data.expiresAt) console.log(`expires : ${data.expiresAt}`);
     console.log('store it now — it is only shown once. Use it as AB_TOKEN (or ab init --token).');
+    if (flags.rotate) console.log('rotated: the previous token is invalid immediately.');
   }
 }
 

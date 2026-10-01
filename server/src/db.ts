@@ -268,6 +268,7 @@ export class Store {
     this.ensureColumn('messages', 'deadline', 'INTEGER');
     this.ensureColumn('messages', 'late', "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn('agents', 'token_hash', 'TEXT');
+    this.ensureColumn('agents', 'token_expires_at', 'INTEGER');
   }
 
   close(): void {
@@ -629,34 +630,46 @@ export class Store {
   // ------------------------------------------------------------------ misc
 
   /**
-   * Per-agent credentials (v0.2.1, spec §5.9): mint a token bound to one
-   * agent. Only the plaintext hash is stored; the token itself is returned
-   * once. Admin-only (workspace token). Upserts a minimal agent row when the
-   * agent hasn't heartbeated yet (provisioning).
+   * Per-agent credentials (v0.2.1, spec §5.9; expiry/rotation sprint 5 T5):
+   * mint a token bound to one agent. Only the plaintext hash is stored; the
+   * token itself is returned once. Admin-only (workspace token). Upserts a
+   * minimal agent row when the agent hasn't heartbeated yet (provisioning).
+   * Expiry is per-token (the stored hash carries its own expires_at): a mint
+   * for an agent that already has a token atomically REPLACES the hash —
+   * rotation by construction (the old token dies immediately).
    */
-  mintToken(agentId: string, now: number): { token: string } {
+  mintToken(agentId: string, now: number, ttlDays?: number): { token: string; expiresAt: string | null } {
     const token = `abt_${randomBytes(24).toString('hex')}`;
     const hash = createHash('sha256').update(token).digest('hex');
+    const expiresAt = ttlDays !== undefined && ttlDays > 0 ? now + ttlDays * 86_400_000 : null;
     this.db
       .prepare(
-        `INSERT INTO agents (id, status, interval, last_seen, created_at, token_hash)
-         VALUES (?, 'idle', 60, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash`,
+        `INSERT INTO agents (id, status, interval, last_seen, created_at, token_hash, token_expires_at)
+         VALUES (?, 'idle', 60, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, token_expires_at = excluded.token_expires_at`,
       )
-      .run(agentId, now, now, hash);
-    return { token };
+      .run(agentId, now, now, hash, expiresAt);
+    return { token, expiresAt: expiresAt !== null ? new Date(expiresAt).toISOString() : null };
   }
 
   /** Revoke an agent's token (admin-only). */
   revokeToken(agentId: string): void {
-    this.db.prepare('UPDATE agents SET token_hash = NULL WHERE id = ?').run(agentId);
+    this.db.prepare('UPDATE agents SET token_hash = NULL, token_expires_at = NULL WHERE id = ?').run(agentId);
   }
 
-  /** Resolve a bearer token to the agent it is bound to (or null). */
-  agentForToken(bearer: string): string | null {
+  /**
+   * Resolve a bearer token: `null` when no agent holds this hash, otherwise
+   * the bound agent and whether its token has expired (sprint 5 T5 — an
+   * expired token is distinguishable from a wrong one, so clients get the
+   * `token_expired` code instead of a generic 401).
+   */
+  tokenAgent(bearer: string, now: number): { agentId: string; expired: boolean } | null {
     const hash = createHash('sha256').update(bearer).digest('hex');
-    const row = this.db.prepare('SELECT id FROM agents WHERE token_hash = ?').get(hash) as { id: string } | undefined;
-    return row?.id ?? null;
+    const row = this.db.prepare('SELECT id, token_expires_at FROM agents WHERE token_hash = ?').get(hash) as
+      | { id: string; token_expires_at: number | null }
+      | undefined;
+    if (!row) return null;
+    return { agentId: row.id, expired: row.token_expires_at !== null && row.token_expires_at <= now };
   }
 
   /**
