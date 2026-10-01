@@ -2,7 +2,7 @@
  * `ab` CLI commands — one function per subcommand.
  * Every command accepts `json` (--json) for machine-readable stdout.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
@@ -491,5 +491,178 @@ export async function cmdAgents(flags, json) {
       const task = a.currentTask ? ` task="${a.currentTask}"` : '';
       console.log(`${a.agentId} [${a.presence}] ${a.status ?? 'idle'} roles=[${roles}] boards=[${boards}]${task}`);
     }
+  }
+}
+
+// ------------------------------------------------------------------ spawn (issue #42 part 2)
+
+export const SPAWN_DEFAULT_AGENT = 'board-worker';
+export const SPAWN_DEFAULT_MODEL = 'opencode-go/deepseek-v4-flash';
+const SPAWN_OPPENCODE_TIER = 'opencode';
+
+/**
+ * Random hex suffix for default child agentIds (`<role>-<3-hex>`):
+ * 3 random bytes → 6 hex chars, e.g. `qa-3f9a2c`.
+ */
+function randomHex(bytes = 3) {
+  let s = '';
+  for (let i = 0; i < bytes; i += 1) {
+    s += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+  }
+  return s;
+}
+
+/** Display quoting for a printed command line (dry-run output only). */
+function shellQuote(s) {
+  return /[\s"^&|<>]/.test(s) ? `"${String(s).replace(/"/g, '\\"')}"` : String(s);
+}
+
+/** cmd.exe quoting for the ACTUAL spawned command line (Windows shim path). */
+function cmdQuote(s) {
+  const str = String(s);
+  // Wrap when the arg contains whitespace or cmd metacharacters so the message
+  // survives as ONE argv entry (a split message with embedded --flags broke
+  // opencode's yargs parsing in the live test).
+  return /[\s"&|<>^%]/.test(str) ? `"${str.replace(/"/g, '\\"')}"` : str;
+}
+
+/**
+ * Launch the opencode worker. Windows ships `opencode` as a .cmd shim, which
+ * CreateProcess cannot exec directly — run it through cmd.exe. Explicitly
+ * passing /d /s /c avoids Node's DEP0190 shell:true warning and lets us quote
+ * the args ourselves (shell:true merely concatenates, which is the bug the
+ * live test caught). POSIX: plain exec of the `opencode` binary.
+ */
+function spawnWorker(args, env) {
+  if (process.platform === 'win32') {
+    const cmdline = ['opencode', ...args.map(cmdQuote)].join(' ');
+    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmdline], { env, stdio: 'inherit' });
+  }
+  return spawn('opencode', args, { env, stdio: 'inherit' });
+}
+
+/** Synchronous `opencode` invocation (pre-flight). Same .cmd-shim handling. */
+function execOpencode(args, opts = {}) {
+  if (process.platform === 'win32') {
+    const cmdline = ['opencode', ...args.map(cmdQuote)].join(' ');
+    return execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmdline], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'pipe'],
+      ...opts,
+    });
+  }
+  return execFileSync('opencode', args, { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'], ...opts });
+}
+
+/**
+ * `ab spawn <role> [--board <b>] [--count <n>] [--brief <text>|-f <file>]
+ *            [--agent-id <id>] [--dry-run]`
+ * Spawns transient board workers per tier preference:
+ *   - opencode (default): headless `opencode run --agent board-worker`
+ *     (pre-flights `opencode --version`, surfaces stderr on failure).
+ *   - vs-code (and any other tier): cannot be spawned headlessly — prints the
+ *     human-invoked fallback (`/ab join <board> as <role>`) instead of failing.
+ * Tier: `AB_SPAWN_TIER` env > config `spawn.tier` > default `opencode`.
+ * Model/agent: `AB_SPAWN_MODEL`/`AB_SPAWN_AGENT` env > config `spawn.model`/`spawn.agent`.
+ * Child env carries AB_SERVER/AB_TOKEN/AB_AGENT_ID/AB_ROLES from the spawner
+ * config so the worker session heartbeats as the spawned identity.
+ */
+export async function cmdSpawn(flags, json) {
+  const cfg = loadConfig();
+
+  const role = flags.role ?? flags._[0];
+  if (!role) usage('spawn requires a role', 'ab spawn qa --board sprint-8 [--count 2] [--brief "review PR #12"] [-f brief.md] [--dry-run]');
+  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(role)) usage(`invalid role: ${role} (must match ^[a-z][a-z0-9._-]{0,63}$)`);
+
+  const board = flags.board ?? cfg.boards[0];
+  if (!board) usage('no board: pass --board or run `ab join --board <name>` first');
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(board)) usage(`invalid board name: ${board} (must match ^[a-z0-9][a-z0-9._-]{0,63}$)`);
+
+  const count = flags.count === undefined ? 1 : Number(flags.count);
+  if (!Number.isInteger(count) || count < 1 || count > 20) usage('--count must be an integer in 1..20');
+
+  // OpenCode's `--file` is a yargs *array* option — it consumes every token
+  // after it, so the message must come BEFORE `-f` (demo finding, issue #42).
+  const file = flags.file ?? flags.f;
+  if (file !== undefined && !existsSync(file)) usage(`brief file not found: ${file}`);
+
+  const tier = String(process.env.AB_SPAWN_TIER ?? cfg.spawn?.tier ?? SPAWN_OPPENCODE_TIER).toLowerCase();
+
+  // Unsupported tier (incl. vs-code): print the human-invoked fallback instead
+  // of failing — the mailbox keeps pending requests until a human worker joins.
+  if (tier !== SPAWN_OPPENCODE_TIER) {
+    const instructions = [
+      `ab spawn: tier "${tier}" cannot be spawned headlessly.`,
+      `start a worker manually:`,
+      `  1. open a VS Code chat in ${process.cwd()}`,
+      `  2. run: /ab join ${board} as ${role}`,
+      `  3. the worker heartbeats, claims role:${role} requests, replies, and exits.`,
+    ].join('\n');
+    if (json) {
+      console.log(JSON.stringify({ tier, humanFallback: true, role, board, instructions }));
+    } else {
+      console.log(instructions);
+    }
+    return;
+  }
+
+  const model = process.env.AB_SPAWN_MODEL ?? cfg.spawn?.model ?? SPAWN_DEFAULT_MODEL;
+  const agent = process.env.AB_SPAWN_AGENT ?? cfg.spawn?.agent ?? SPAWN_DEFAULT_AGENT;
+  const message = flags.brief ?? (
+    file !== undefined
+      ? `Execute the attached brief. Board ${board}, role ${role}.`
+      : `Board ${board}, role ${role}: join the board, pick up a pending request for role:${role}, do the work, ack done, reply to the sender, then heartbeat idle and exit.`
+  );
+
+  // Pre-flight: verify the opencode binary is reachable before shelling out
+// (surfaces stderr on failure, e.g. a missing install or broken auth setup).
+  if (!flags.dryRun) {
+    try {
+      execOpencode(['--version']);
+    } catch (e) {
+      const stderr = String(e?.stderr ?? e?.message ?? '').trim();
+      throw new CliError(
+        `opencode pre-flight failed${stderr ? `: ${stderr}` : ' (opencode not found on PATH)'}\n` +
+        '  fix: install opencode and configure a provider token that supports non-interactive runs (opencode auth login), or set AB_SPAWN_TIER=vs-code for a human-invoked worker.',
+      );
+    }
+  }
+
+  const spawned = [];
+  const commands = [];
+  for (let i = 0; i < count; i += 1) {
+    const agentId = (flags.agentId ?? `${role}-${randomHex()}`) + (i > 0 ? `-${i + 1}` : '');
+    // Message first, `-f` last (yargs array option consumes trailing tokens).
+    const args = ['run', '--agent', agent, '--model', model, message, '--dir', process.cwd()];
+    if (file !== undefined) args.push('-f', file);
+    const cmdline = ['opencode', ...args.map(shellQuote)].join(' ');
+
+    if (flags.dryRun) {
+      commands.push(cmdline);
+      continue;
+    }
+
+    const childEnv = {
+      ...process.env,
+      AB_SERVER: cfg.server,
+      AB_TOKEN: cfg.token,
+      AB_AGENT_ID: agentId,
+      AB_ROLES: role,
+    };
+    const child = spawnWorker(args, childEnv);
+    child.on('error', (err) => {
+      process.stderr.write(`error: failed to spawn worker ${agentId}: ${err.message}\n`);
+    });
+    child.unref(); // fire-and-forget: the worker heartbeats on its own
+    spawned.push({ agentId, pid: child.pid, command: cmdline });
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ tier, dryRun: Boolean(flags.dryRun), role, board, model, agent, spawned, commands }));
+  } else if (flags.dryRun) {
+    for (const c of commands) console.log(c);
+    console.log(`spawn dry run: ${commands.length} worker(s) for role:${role} on ${board} — nothing executed`);
+  } else {
+    for (const s of spawned) console.log(`spawned ${s.agentId} (opencode pid=${s.pid}) on ${board} as role:${role}`);
   }
 }

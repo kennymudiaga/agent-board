@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -43,6 +43,11 @@ commands:
              ab whoami [--json]
   agents     list the agent directory (roles/status/presence; offline included)
              ab agents [--board <name>] [--role <role>] [--status idle|busy] [--json]
+  spawn      spawn transient workers for a role (tiered: opencode | vs-code fallback)
+             ab spawn <role> [--board <name>] [--count <n>] [--brief <text>|-f <file>]
+             [--agent-id <id>] [--dry-run]
+             tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
+             message comes BEFORE -f: opencode's --file consumes every following token
 
 global options:
   --json     machine-readable JSON on stdout
@@ -71,6 +76,16 @@ function parseArgs(args) {
           out[key] = true;
         }
       }
+    } else if (a.startsWith('-') && a.length === 2) {
+      // Short flag (e.g. `-f <file>` — spawn's brief-file alias).
+      const key = a.slice(1);
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        out[key] = next;
+        i++;
+      } else {
+        out[key] = true;
+      }
     } else {
       out._.push(a);
     }
@@ -92,6 +107,7 @@ const COMMANDS = {
   token: cmdToken,
   whoami: cmdWhoami,
   agents: cmdAgents,
+  spawn: cmdSpawn,
 };
 
 async function main() {

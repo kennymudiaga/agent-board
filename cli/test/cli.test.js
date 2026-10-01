@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
@@ -629,6 +629,93 @@ describe('ab CLI against the reference server', () => {
       const badStatus = await runCli(['agents', '--status', 'asleep'], { cwd: dir });
       expect(badStatus.code).not.toBe(0);
       expect(badStatus.stderr).toContain('idle or busy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn validates: missing role, bad count, missing brief file (issue #42 part 2)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+
+      const noRole = await runCli(['spawn', '--board', 'sprint-7'], { cwd: dir });
+      expect(noRole.code).not.toBe(0);
+      expect(noRole.stderr).toContain('requires a role');
+
+      const badCount = await runCli(['spawn', 'qa', '--board', 'sprint-7', '--count', '0'], { cwd: dir });
+      expect(badCount.code).not.toBe(0);
+      expect(badCount.stderr).toContain('1..20');
+
+      const badRole = await runCli(['spawn', 'QA!', '--board', 'sprint-7'], { cwd: dir });
+      expect(badRole.code).not.toBe(0);
+      expect(badRole.stderr).toContain('invalid role');
+
+      const missingFile = await runCli(['spawn', 'qa', '--board', 'sprint-7', '-f', 'nope.md', '--dry-run'], { cwd: dir });
+      expect(missingFile.code).not.toBe(0);
+      expect(missingFile.stderr).toContain('brief file not found');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn --dry-run prints the opencode command with the message BEFORE -f and runs nothing (issue #42 part 2)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      writeFileSync(join(dir, 'brief.md'), 'brief body\n');
+
+      const run = await runCli(
+        ['spawn', 'qa', '--board', 'sprint-8', '--count', '2', '--brief', 'review PR #12', '-f', 'brief.md', '--dry-run'],
+        { cwd: dir },
+      );
+      expect(run.code).toBe(0, run.stderr);
+      expect(run.stdout).toContain('opencode run');
+      expect(run.stdout).toContain('--agent board-worker');
+      expect(run.stdout).toContain('--model opencode-go/deepseek-v4-flash');
+      expect(run.stdout).toContain('review PR #12');
+      expect(run.stdout).toContain('-f brief.md');
+      expect(run.stdout).toContain('nothing executed');
+
+      // The message must appear before -f (opencode's --file is a yargs array
+      // option that consumes every following token — demo finding).
+      const msgIdx = run.stdout.indexOf('review PR #12');
+      const fIdx = run.stdout.indexOf('-f brief.md');
+      expect(msgIdx).toBeGreaterThan(-1);
+      expect(fIdx).toBeGreaterThan(msgIdx);
+
+      // One command per --count.
+      const lines = run.stdout.split('\n').filter((l) => l.startsWith('opencode run'));
+      expect(lines).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn on the vs-code tier prints the human-invoked /ab join fallback (issue #42 part 2)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+
+      const fallback = await runCli(['spawn', 'qa', '--board', 'sprint-8'], {
+        cwd: dir,
+        env: { AB_SPAWN_TIER: 'vs-code' },
+      });
+      expect(fallback.code).toBe(0, fallback.stderr); // prints instructions, does not fail
+      expect(fallback.stdout).toContain('cannot be spawned headlessly');
+      expect(fallback.stdout).toContain('/ab join sprint-8 as qa');
+      expect(fallback.stdout).not.toContain('opencode run');
+
+      // An unknown tier gets the same graceful fallback.
+      const unknown = await runCli(['spawn', 'qa', '--board', 'sprint-8'], {
+        cwd: dir,
+        env: { AB_SPAWN_TIER: 'devin' },
+      });
+      expect(unknown.code).toBe(0, unknown.stderr);
+      expect(unknown.stdout).toContain('/ab join sprint-8 as qa');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
