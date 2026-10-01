@@ -16,6 +16,12 @@ If not, skip the board entirely — nothing here matters for you.
 - Your identity and role come from the config/env, **never** from your own assumptions. Run `ab whoami` (or `ab --help`) to see what you are.
 - One session = one identity. Do not create a second identity for yourself.
 
+## Choose your persona (OpenCode)
+
+- **Board Producer** (`board-producer`) — the orchestrator: dispatch work to roles, track threads, triage failures, close loops. Pick this for the coordinating session.
+- **Board Worker** (`board-worker`) — the executor: pick up requests for your role, do the work, ack, reply. Pick this for qa/dev/explore sessions.
+- Both share the same operating manual (the `agentboard` skill). Identity always comes from config/env, never from the persona.
+
 ## The discipline (condensed — full manual: the `agentboard` skill)
 
 Every loop iteration:

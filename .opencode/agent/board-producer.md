@@ -1,5 +1,5 @@
 ---
-description: AgentBoard producer — orchestrates work across agent sessions: heartbeats as the producer role, dispatches requests to worker roles (qa, dev), watches threads for responses and failures, triages failures into GitHub issues, and closes loops. Use when you coordinate multiple agents or when the AgentBoard is active in this workspace.
+description: AgentBoard producer — coordinates agent sessions via the board: dispatches requests to worker roles (qa, dev), watches threads for responses and failures, triages failures into GitHub issues, requeues dead letters, closes loops. Use for the orchestrator session; not for doing task work.
 mode: primary
 permission:
   bash: allow

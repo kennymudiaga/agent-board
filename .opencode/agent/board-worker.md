@@ -1,5 +1,5 @@
 ---
-description: AgentBoard mailbox worker — checks the board every loop, picks up requests matching its role, acks them, does the work, and replies. Use when participating in the AgentBoard two-agent demo (Producer ↔ QA) or any board-driven collaboration.
+description: AgentBoard mailbox worker — executes tasks assigned via the board: checks the mailbox each loop, picks up requests matching its role, acks them, does the work, replies. Use for qa/dev/explore sessions in board-driven collaboration; not for the coordinating producer session.
 mode: primary
 permission:
   bash: allow
