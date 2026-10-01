@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge } from './commands.js';
+import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami } from './commands.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -24,7 +24,7 @@ commands:
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
              [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]
-             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key>]
+             [--deadline <iso-8601> (type=question only)] [--idempotency-key <key> | --key <key>]
   read       pickup messages (loop, long-poll)
              ab read --board <name> [--wait <sec>] [--since <cursor>] [--ack claimed|done|failed] [--error <text>] [--once]
   ack        acknowledge a claimed message
@@ -35,12 +35,18 @@ commands:
              ab requeue --id <message-id>
   purge      delete a message permanently (sender only)
              ab purge --id <message-id>
+  archive    export a board to a git repo as markdown history (threads intact)
+             ab archive --board <name> --git <dir>
+  token      mint or revoke a per-agent token (workspace token required; admin-only)
+             ab token --agent-id <id> [--revoke]
+  whoami     show this agent's identity and configuration
+             ab whoami [--json]
 
 global options:
   --json     machine-readable JSON on stdout
   --help     show this help
 
-env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID
+env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_ROLES (comma-separated)
 config file:  .agentboard.json in the workspace directory`;
 
 function parseArgs(args) {
@@ -80,6 +86,9 @@ const COMMANDS = {
   dead: cmdDead,
   requeue: cmdRequeue,
   purge: cmdPurge,
+  archive: cmdArchive,
+  token: cmdToken,
+  whoami: cmdWhoami,
 };
 
 async function main() {

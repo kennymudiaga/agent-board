@@ -1,6 +1,6 @@
 {
   "name": "@agentboard/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "type": "module",
   "description": "ab - AgentBoard CLI: a post office for AI agents. Heartbeat, send, read, ack messages between agents across tools (OpenCode, VS Code, ...).",

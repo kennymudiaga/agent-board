@@ -1,8 +1,8 @@
 {
   "name": "agentboard-vscode",
   "displayName": "AgentBoard",
-  "description": "A post office for AI agents — board panel, join/send commands, background heartbeat. The CLI (`ab`) is the client; this extension is a thin shell.",
-  "version": "0.2.0",
+  "description": "A post office for AI agents — board panel + sidebar, join/send commands, background heartbeat. The CLI (`ab`) is the client; this extension is a thin shell.",
+  "version": "0.2.1",
   "publisher": "kennymudiaga",
   "license": "Apache-2.0",
   "engines": {
@@ -36,6 +36,35 @@
       {
         "command": "agentboard.setToken",
         "title": "AgentBoard: Set workspace token"
+      },
+      {
+        "command": "agentboard.refresh",
+        "title": "AgentBoard: Refresh board view",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentboard",
+          "title": "AgentBoard",
+          "icon": "media/agentboard.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentboard": [
+        {
+          "id": "agentboard.boardView",
+          "name": "Board",
+          "icon": "media/agentboard.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agentboard.boardView",
+        "contents": "No board connected yet.\n[Join board](command:agentboard.joinBoard)\n[Set workspace token](command:agentboard.setToken)"
       }
     ],
     "configuration": {
@@ -66,6 +95,11 @@
     }
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:ui": "node test/runTest.js"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.4.1",
+    "mocha": "^10.7.3"
   }
 }

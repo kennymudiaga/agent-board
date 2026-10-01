@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 /**
  * Storage layer for the AgentBoard reference server.
@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS agents (
   current_task TEXT,
   interval     INTEGER NOT NULL DEFAULT 60,
   last_seen    INTEGER NOT NULL,
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  token_hash   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -266,6 +267,7 @@ export class Store {
     // not add columns to existing tables).
     this.ensureColumn('messages', 'deadline', 'INTEGER');
     this.ensureColumn('messages', 'late', "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn('agents', 'token_hash', 'TEXT');
   }
 
   close(): void {
@@ -285,6 +287,22 @@ export class Store {
 
   boardExists(name: string): boolean {
     return this.db.prepare('SELECT 1 FROM boards WHERE name = ?').get(name) !== undefined;
+  }
+
+  /** Read-only board directory (v0.2.1, spec §5.8): every known board + message count. */
+  listBoards(): { name: string; createdAt: string; messageCount: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT b.name, b.created_at, COUNT(m.id) AS message_count
+         FROM boards b LEFT JOIN messages m ON m.board = b.name
+         GROUP BY b.name, b.created_at ORDER BY b.name ASC`,
+      )
+      .all() as { name: string; created_at: number; message_count: number }[];
+    return rows.map((r) => ({
+      name: r.name,
+      createdAt: new Date(r.created_at).toISOString(),
+      messageCount: r.message_count,
+    }));
   }
 
   // ------------------------------------------------------------------ agents
@@ -597,6 +615,37 @@ export class Store {
   }
 
   // ------------------------------------------------------------------ misc
+
+  /**
+   * Per-agent credentials (v0.2.1, spec §5.9): mint a token bound to one
+   * agent. Only the plaintext hash is stored; the token itself is returned
+   * once. Admin-only (workspace token). Upserts a minimal agent row when the
+   * agent hasn't heartbeated yet (provisioning).
+   */
+  mintToken(agentId: string, now: number): { token: string } {
+    const token = `abt_${randomBytes(24).toString('hex')}`;
+    const hash = createHash('sha256').update(token).digest('hex');
+    this.db
+      .prepare(
+        `INSERT INTO agents (id, status, interval, last_seen, created_at, token_hash)
+         VALUES (?, 'idle', 60, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash`,
+      )
+      .run(agentId, now, now, hash);
+    return { token };
+  }
+
+  /** Revoke an agent's token (admin-only). */
+  revokeToken(agentId: string): void {
+    this.db.prepare('UPDATE agents SET token_hash = NULL WHERE id = ?').run(agentId);
+  }
+
+  /** Resolve a bearer token to the agent it is bound to (or null). */
+  agentForToken(bearer: string): string | null {
+    const hash = createHash('sha256').update(bearer).digest('hex');
+    const row = this.db.prepare('SELECT id FROM agents WHERE token_hash = ?').get(hash) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
 
   /**
    * Dead-letter requeue (v0.2, spec §5.7): dead -> pending with attempts reset.

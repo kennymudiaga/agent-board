@@ -126,4 +126,20 @@ describe('dashboard (T6 stretch)', () => {
     expect(picked.messages[0].attempts).toBe(1);
     expect(picked.messages[0].claimAgent).toBe('qa-1');
   });
+
+  it('lists the board directory read-only (spec §5.8)', async () => {
+    await api(app, 'POST', '/v1/heartbeat', {
+      body: { agentId: 'qa-1', roles: ['qa'], boards: ['sprint-7', 'sprint-8'], interval: 15 },
+    });
+    await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      agent: 'producer-1',
+      body: { to: 'role:qa', type: 'note', payload: { text: 'x' } },
+    });
+    const res = await app.request('/v1/boards', { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(200);
+    const { boards } = await res.json();
+    expect(boards.map((b: { name: string }) => b.name).sort()).toEqual(['sprint-7', 'sprint-8']);
+    expect(boards.find((b: { name: string }) => b.name === 'sprint-7').messageCount).toBe(1);
+    expect(boards.find((b: { name: string }) => b.name === 'sprint-8').messageCount).toBe(0);
+  });
 });

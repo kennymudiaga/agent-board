@@ -32,7 +32,7 @@ export interface AppOptions {
   token?: string;
 }
 
-type Variables = { agentId: string };
+type Variables = { agentId: string; tokenAgent?: string };
 
 function error(c: Context, status: ContentfulStatusCode, code: string, message: string, extra?: Record<string, unknown>) {
   return c.json({ error: { code, message, ...extra } }, status);
@@ -88,15 +88,37 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     // /v1/events authenticates via query param (SSE cannot set headers) in its own route.
     if (c.req.path === '/v1/events') return next();
     const auth = c.req.header('Authorization');
-    if (auth !== `Bearer ${token}`) {
+    if (!auth?.startsWith('Bearer ')) {
       return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
     }
-    await next();
-  });
+    const bearer = auth.slice('Bearer '.length);
 
-  app.use('/v1/*', async (c, next) => {
-    // heartbeat declares its identity in the body; the dashboard stream has none.
-    if (c.req.path === '/v1/heartbeat' || c.req.path === '/v1/events') return next();
+    // Token minting/revocation is workspace-token (admin) ONLY — an agent
+    // token must never mint or revoke.
+    if (c.req.path.startsWith('/v1/tokens')) {
+      if (bearer !== token) return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
+      return next();
+    }
+
+    // Per-agent token (v0.2.1, §5.9): identity is bound to the token. If an
+    // X-Agent-ID is also sent it must match — impersonation is impossible.
+    const tokenAgent = store.agentForToken(bearer);
+    if (tokenAgent) {
+      const xid = c.req.header('X-Agent-ID');
+      if (xid !== undefined && xid !== tokenAgent) {
+        return error(c, 401, 'unauthorized', "X-Agent-ID does not match the token's agent");
+      }
+      c.set('agentId', tokenAgent);
+      c.set('tokenAgent', tokenAgent);
+      return next();
+    }
+
+    if (bearer !== token) {
+      return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
+    }
+    // Heartbeat declares its identity in the body.
+    if (c.req.path === '/v1/heartbeat') return next();
+
     const agentId = c.req.header('X-Agent-ID');
     if (agentId !== undefined) {
       if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
@@ -123,6 +145,12 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     const agentId = body.agentId;
     if (typeof agentId !== 'string' || !ID_RE.test(agentId)) {
       return error(c, 422, 'unprocessable', 'invalid agentId');
+    }
+    // With a per-agent token, the heartbeat body must declare the token's
+    // agent — an agent token cannot register another identity (§5.9).
+    const bound = c.get('tokenAgent');
+    if (bound !== undefined && agentId !== bound) {
+      return error(c, 401, 'unauthorized', "heartbeat agentId does not match the token's agent");
     }
     const status = body.status ?? 'idle';
     if (!AGENT_STATUSES.includes(status as AgentStatus)) {
@@ -220,6 +248,31 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       connection: 'keep-alive',
     });
   });
+
+  // --- POST /v1/tokens + DELETE /v1/tokens/:agentId (v0.2.1, §5.9) ----------
+
+  app.post('/v1/tokens', async (c) => {
+    const body = await readJsonObject(c);
+    if (!body) return error(c, 400, 'bad_request', 'body must be a JSON object');
+    const agentId = body.agentId;
+    if (agentId === undefined) return error(c, 400, 'bad_request', 'agentId is required');
+    if (typeof agentId !== 'string' || !ID_RE.test(agentId)) {
+      return error(c, 422, 'unprocessable', 'invalid agentId');
+    }
+    const { token: minted } = store.mintToken(agentId, Date.now());
+    return c.json({ agentId, token: minted, note: 'store this token now — it is only shown once' }, 201);
+  });
+
+  app.delete('/v1/tokens/:agentId', (c) => {
+    const agentId = c.req.param('agentId');
+    if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid agentId');
+    store.revokeToken(agentId);
+    return c.json({ ok: true, revoked: agentId }, 200);
+  });
+
+  // --- GET /v1/boards (v0.2.1, spec §5.8): read-only board directory --------
+
+  app.get('/v1/boards', (c) => c.json({ boards: store.listBoards() }, 200));
 
   // --- GET /v1/agents -------------------------------------------------------
 
@@ -346,6 +399,12 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     if (q.for !== undefined) {
       if (!ID_RE.test(q.for)) return error(c, 400, 'bad_request', 'invalid for agent id');
       forAgent = q.for;
+    }
+    // #39: the `for` param must never override a bound identity — pickup
+    // claims happen in the caller's own name only. (Identity-less callers get
+    // the read-only observability view below, where `for` is ignored.)
+    if (callerAgent && forAgent && forAgent !== callerAgent) {
+      return error(c, 401, 'unauthorized', 'for must match the authenticated agent id');
     }
     let statusFilter: MsgState | undefined;
     if (q.status !== undefined) {

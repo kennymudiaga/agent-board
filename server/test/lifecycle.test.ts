@@ -433,6 +433,121 @@ describe('message lifecycle', () => {
     expect((await api(app, 'POST', '/v1/messages/msg_nope/ack', { agent: 'qa-1', body: { status: 'done' } })).status).toBe(404);
   });
 
+  describe('per-agent credentials (T6)', () => {
+    it('mints, uses, and revokes an agent token; impersonation is rejected', async () => {
+    const { app } = makeCtx();
+    await heartbeat(app, 'qa-1', { roles: ['qa'] });
+
+    // Mint (workspace token).
+    const mint = await api(app, 'POST', '/v1/tokens', { body: { agentId: 'qa-1' } });
+    expect(mint.status).toBe(201);
+    const { token } = await mint.json();
+    expect(token).toMatch(/^abt_[0-9a-f]{48}$/);
+
+    // The agent token authenticates WITHOUT X-Agent-ID (identity from token).
+    const hb = await app.request('/v1/heartbeat', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'qa-1', status: 'busy', interval: 15, boards: ['sprint-7'] }),
+    });
+    expect(hb.status).toBe(200);
+
+    // Done-when: an agent with only its own token cannot act as another agent.
+    const impersonate = await app.request('/v1/heartbeat', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-agent-id': 'dev-1' },
+      body: JSON.stringify({ agentId: 'dev-1', interval: 15 }),
+    });
+    expect(impersonate.status).toBe(401);
+
+    // Matching X-Agent-ID is fine.
+    const matching = await app.request('/v1/agents', {
+      headers: { authorization: `Bearer ${token}`, 'x-agent-id': 'qa-1' },
+    });
+    expect(matching.status).toBe(200);
+
+    // Agent tokens cannot mint (admin-only).
+    const noMint = await app.request('/v1/tokens', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'dev-1' }),
+    });
+    expect(noMint.status).toBe(401);
+
+    // Revoke (workspace token) -> token stops working.
+    const revoke = await api(app, 'DELETE', '/v1/tokens/qa-1');
+    expect(revoke.status).toBe(200);
+    const after = await app.request('/v1/heartbeat', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'qa-1', interval: 15 }),
+    });
+    expect(after.status).toBe(401);
+  });
+
+  it('mint provisions an agent that has not heartbeated yet', async () => {
+    const { app } = makeCtx();
+    const mint = await api(app, 'POST', '/v1/tokens', { body: { agentId: 'fresh-1' } });
+    expect(mint.status).toBe(201);
+    const { token } = await mint.json();
+    const hb = await app.request('/v1/heartbeat', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'fresh-1', interval: 15 }),
+    });
+    expect(hb.status).toBe(200);
+  });
+
+  it('the ?for= param cannot override a token-bound identity (regression #39)', async () => {
+    const { app } = makeCtx();
+    await heartbeat(app, 'qa-1', { roles: ['qa'] });
+    await heartbeat(app, 'dev-1', { roles: ['dev'] });
+
+    // Mail addressed to dev-1 only.
+    await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      agent: 'producer-1',
+      body: { to: 'agent:dev-1', type: 'request', payload: { text: 'devs only' } },
+    });
+
+    // Mint a token for qa-1; try to pick up dev-1's mail with for=dev-1.
+    const mint = await api(app, 'POST', '/v1/tokens', { body: { agentId: 'qa-1' } });
+    const { token } = await mint.json();
+
+    const steal = await app.request('/v1/boards/sprint-7/messages?for=dev-1', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(steal.status).toBe(401);
+    expect((await steal.json()).error.code).toBe('unauthorized');
+
+    // The victim's mail is untouched: still pending, not claimed.
+    const view = await app.request('/v1/boards/sprint-7/messages', {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const body = (await view.json()) as { messages: { state: string; claimAgent: string | null }[] };
+    expect(body.messages[0].state).toBe('pending');
+    expect(body.messages[0].claimAgent).toBeNull();
+
+    // The same token MAY pick up as its own agent (for=qa-1 matches).
+    const own = await app.request('/v1/boards/sprint-7/messages?for=qa-1', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(own.status).toBe(200);
+
+    // Workspace-token callers are bound the same way (X-Agent-ID trust model).
+    const ws = await app.request('/v1/boards/sprint-7/messages?for=qa-1', {
+      headers: { authorization: `Bearer ${TOKEN}`, 'x-agent-id': 'dev-1' },
+    });
+    expect(ws.status).toBe(401);
+  });
+
+  it('validates token input', async () => {
+    const { app } = makeCtx();
+    expect((await api(app, 'POST', '/v1/tokens', { body: { agentId: 'BAD ID!' } })).status).toBe(422);
+    expect((await api(app, 'POST', '/v1/tokens', { body: {} })).status).toBe(400);
+    expect((await api(app, 'DELETE', '/v1/tokens/BAD ID!')).status).toBe(422);
+  });
+});
+
   describe('true cursor watermark (T1, #12)', () => {
     async function send(app: ReturnType<typeof createApp>, to: string, text: string) {
       const res = await api(app, 'POST', '/v1/boards/sprint-7/messages', {

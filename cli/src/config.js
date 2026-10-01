@@ -27,6 +27,7 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
   } else if (requireFile && !(process.env.AB_SERVER && process.env.AB_TOKEN && process.env.AB_AGENT_ID)) {
     throw new CliError(`no ${CONFIG_FILE} in ${cwd} — run \`ab init\` first`);
   }
+  const envRoles = process.env.AB_ROLES !== undefined ? parseList(process.env.AB_ROLES) : null;
   return {
     path,
     fromEnv: !existed,
@@ -39,20 +40,20 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     token: process.env.AB_TOKEN ?? file.token,
     agentId: process.env.AB_AGENT_ID ?? file.agentId,
     provider: file.provider ?? null,
-    roles: Array.isArray(file.roles) ? file.roles : [],
+    roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : []),
     boards: Array.isArray(file.boards) ? file.boards : [],
     cursors: file.cursors && typeof file.cursors === 'object' ? file.cursors : {},
   };
 }
 
 export function saveConfig(cfg) {
-  // Env-only runs (no pre-existing config file) persist cursors and nothing
-  // else — the env is the identity source, and a token from AB_TOKEN must
-  // never reach disk (issue #25). When a stored token exists, keep it even if
-  // AB_TOKEN is set for this session (issue #26 — never erase deliberate
-  // config); the env token itself is never written.
+  // Env-only runs (no pre-existing config file) persist cursors + boards and
+  // nothing else — boards are non-secret operational state (`ab join` must
+  // survive the process), but a token from AB_TOKEN must never reach disk
+  // (issue #25). When a stored token exists, keep it even if AB_TOKEN is set
+  // for this session (issue #26 — never erase deliberate config).
   const payload = cfg.fromEnv
-    ? { cursors: cfg.cursors }
+    ? { boards: cfg.boards, cursors: cfg.cursors }
     : {
         server: cfg.server,
         token: cfg.fileToken ?? (cfg.tokenFromEnv ? undefined : cfg.token),

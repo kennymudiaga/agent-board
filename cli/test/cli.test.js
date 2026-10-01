@@ -29,6 +29,14 @@ afterAll(async () => {
   store.close();
 });
 
+function gitLog(dir) {
+  return new Promise((resolvePromise) => {
+    execFile('git', ['log', '--pretty=%s'], { cwd: dir }, (err, stdout) => {
+      resolvePromise(err ? [] : stdout.split('\n').filter(Boolean));
+    });
+  });
+}
+
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
     execFile(
@@ -348,6 +356,24 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('env-only join persists membership without persisting the token (dogfood kink)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // env-only identity; join a board; the membership must survive.
+      const joined = await runCli(['join', '--board', 'sprint-7'], {
+        cwd: dir,
+        env: { AB_AGENT_ID: 'env-agent' },
+      });
+      expect(joined.code).toBe(0, joined.stderr);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.boards).toEqual(['sprint-7']); // membership persisted
+      expect(cfg.token).toBeUndefined(); // token still never written
+      expect(cfg.server).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('existing config keeps its stored token even when AB_TOKEN is set (regression #26)', async () => {
     const dir = makeWorkspace();
     try {
@@ -409,6 +435,109 @@ describe('ab CLI against the reference server', () => {
       expect(purged.code).toBe(0, purged.stderr);
       const deadAgain = await runCli(['dead', '--board', 'sprint-7'], { cwd: dir });
       expect(deadAgain.stdout).not.toContain(msg.id);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('archive exports the board to markdown with one commit per thread (T5)', async () => {
+    const dir = makeWorkspace();
+    const archiveDir = join(dir, 'archive');
+    const board = 'archive-board'; // fresh board — deterministic thread count
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', board], { cwd: dir });
+      await runCli(['heartbeat', '--once', '--board', board], { cwd: dir });
+
+      // A request thread + a response.
+      const req = await runCli(['send', '--board', board, '--to', 'agent:cli-agent', '--type', 'request', '--message', 'review PR #12', '--json'], { cwd: dir });
+      const reqMsg = JSON.parse(req.stdout);
+      const resp = await runCli(['send', '--board', board, '--to', 'agent:cli-agent', '--type', 'response', '--reply-to', reqMsg.id, '--message', 'approved', '--json'], { cwd: dir });
+      const respMsg = JSON.parse(resp.stdout);
+
+      const run = await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      expect(run.code).toBe(0, run.stderr);
+      expect(run.stdout).toContain('archived');
+
+      // Markdown history exists and is readable.
+      const threadFile = join(archiveDir, 'threads', `${reqMsg.id}.md`);
+      expect(existsSync(threadFile)).toBe(true);
+      const md = readFileSync(threadFile, 'utf8');
+      expect(md).toContain('review PR #12');
+      expect(md).toContain('approved');
+      expect(md).toContain(reqMsg.id);
+      expect(md).toContain(respMsg.id);
+      expect(readFileSync(join(archiveDir, 'README.md'), 'utf8')).toContain(`Board ${board}`);
+
+      // One commit per thread (request + response share one thread) + index commit.
+      const log = await gitLog(archiveDir);
+      expect(log.filter((m) => m.includes('thread'))).toHaveLength(1);
+      expect(log.filter((m) => m.includes('index'))).toHaveLength(1);
+
+      // Idempotent: a second run adds no commits.
+      await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      expect(await gitLog(archiveDir)).toEqual(log);
+
+      // Closing the thread (all messages terminal) produces a new commit.
+      const mail = await runCli(['read', '--board', board, '--wait', '0', '--once'], { cwd: dir });
+      expect(mail.stdout).toContain(reqMsg.id);
+      await runCli(['ack', '--id', reqMsg.id, '--status', 'done'], { cwd: dir });
+      await runCli(['ack', '--id', respMsg.id, '--status', 'done'], { cwd: dir });
+      await runCli(['archive', '--board', board, '--git', archiveDir], { cwd: dir });
+      const log2 = await gitLog(archiveDir);
+      expect(log2.filter((m) => m.includes('closed'))).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('token minting binds identity: an agent cannot act as another (T6)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir); // workspace token from the harness env
+      await runCli(['heartbeat', '--once', '--board', 'sprint-7'], { cwd: dir });
+
+      // Mint a token for qa-1 (workspace token = admin).
+      const minted = await runCli(['token', '--agent-id', 'qa-1', '--json'], { cwd: dir });
+      expect(minted.code).toBe(0, minted.stderr);
+      const { token } = JSON.parse(minted.stdout);
+      expect(token).toMatch(/^abt_/);
+
+      // As qa-1 with its own token: heartbeat works (identity from token).
+      const qaDir = makeWorkspace();
+      try {
+        const asQa = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(asQa.code).toBe(0, asQa.stderr);
+
+        // Impersonation: token of qa-1 with a different agent id -> 401.
+        const impostor = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'dev-1', AB_TOKEN: token },
+        });
+        expect(impostor.code).not.toBe(0);
+        expect(impostor.stderr).toContain('does not match');
+
+        // An agent token cannot mint (admin-only).
+        const noMint = await runCli(['token', '--agent-id', 'dev-1'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(noMint.code).not.toBe(0);
+
+        // Revoke via the workspace token -> qa-1's token stops working.
+        const revoked = await runCli(['token', '--agent-id', 'qa-1', '--revoke'], { cwd: dir });
+        expect(revoked.code).toBe(0, revoked.stderr);
+        const dead = await runCli(['heartbeat', '--once', '--board', 'sprint-7'], {
+          cwd: qaDir,
+          env: { AB_AGENT_ID: 'qa-1', AB_TOKEN: token },
+        });
+        expect(dead.code).not.toBe(0);
+      } finally {
+        rmSync(qaDir, { recursive: true, force: true });
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

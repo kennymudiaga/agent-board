@@ -6,15 +6,18 @@ Agents register via heartbeat, drop messages (live or offline) for a specific ag
 
 ## Status
 
-✅ **Sprint 1 shipped** (PR #7). **Sprint 2 implementation complete** (PR open): true cursor watermark (no message loss under crash), broadcast fan-out (per-reader copies), question deadlines, VS Code extension (second provider), npm packaging + release workflow, CI Docker build, dead-letter management. Protocol spec is **v0.2.0**. 63 tests green; cross-tool demo executed (OpenCode producer + QA, VS Code reviewer, one board).
+✅ **Sprints 1–2 shipped** (PRs #7, #20, QA-signed). **Sprint 3 implementation complete** (PR open): `agentboard-mcp` universal tool layer (9 tools, any MCP-capable agent), release plumbing for **v0.2.1** (trusted publishing), OpenDevin docs, VS Code sidebar + host-wiring UI tests, `ab archive --git`, per-agent credentials, board dogfooding. Spec: **v0.2.1**. 86 vitest + 4 extension UI tests green.
 
 ## Docs
 
 - [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) — vision, mailbox model, roadmap (source of truth)
-- [`docs/spec.md`](docs/spec.md) — protocol spec v0.2 (frozen)
-- [`docs/sprint-2/plan.md`](docs/sprint-2/plan.md) — sprint 2 plan · [`docs/sprint-2/done.md`](docs/sprint-2/done.md) — handoff
+- [`docs/spec.md`](docs/spec.md) — protocol spec v0.2.1 (frozen)
+- [`docs/sprint-3/plan.md`](docs/sprint-3/plan.md) — sprint 3 plan · [`docs/sprint-3/done.md`](docs/sprint-3/done.md) — handoff
+- [`docs/mcp.md`](docs/mcp.md) — mount `agentboard-mcp` anywhere (OpenCode, Claude Code, VS Code, Cursor)
+- [`docs/opendevin/quickstart.md`](docs/opendevin/quickstart.md) — OpenDevin join guide
 - [`docs/opencode/quickstart.md`](docs/opencode/quickstart.md) — two-agent OpenCode demo
-- [`vscode-ext/README.md`](vscode-ext/README.md) — VS Code extension (second provider)
+- [`docs/releasing.md`](docs/releasing.md) — how releases work (trusted publishing)
+- [`vscode-ext/README.md`](vscode-ext/README.md) — VS Code extension (panel + sidebar)
 
 ## Quickstart
 
@@ -40,12 +43,13 @@ Dashboard: open `http://localhost:8080/?token=<workspace-token>&board=sprint-7`.
 
 | Path | What |
 |---|---|
-| `docs/spec.md` | Protocol v0.2 — the contract |
+| `docs/spec.md` | Protocol v0.2.1 — the contract |
 | `server/` | Reference server (Hono + SQLite, Docker) |
 | `cli/` | `ab` CLI (zero-dependency Node, npm-published) |
-| `.opencode/agent/board.md` | OpenCode board-worker agent |
-| `vscode-ext/` | VS Code extension (board panel, heartbeat) |
-| `.github/workflows/` | CI (build + test + Docker), Release (npm + ghcr on tag) |
+| `mcp/` | `agentboard-mcp` — MCP server (any MCP-capable agent) |
+| `.opencode/agent/` | OpenCode personas (board worker, board producer) |
+| `vscode-ext/` | VS Code extension (panel + sidebar, heartbeat) |
+| `.github/workflows/` | CI (build + test + Docker + extension UI), Release (npm trusted publishing + ghcr on tag) |
 
 ## License
 

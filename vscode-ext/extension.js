@@ -2,10 +2,12 @@
  * AgentBoard VS Code extension — thin shell over the `ab` CLI.
  *
  * - Board panel (webview): presence + board messages, live via SSE.
- * - Commands: Open board, Join board, Send note, Set token.
+ * - Sidebar view (tree): agents + board messages, same live data.
+ * - Commands: Open board, Join board, Send note, Set token, Refresh.
  * - Background heartbeat: shells out to `ab heartbeat --once` on a timer.
  *
  * The token lives in VS Code SecretStorage — never in settings or the webview.
+ * `activate` returns a small API used by the host-wiring UI tests.
  */
 const vscode = require('vscode');
 const { fetchBoardState, watchBoard } = require('./src/board.js');
@@ -13,8 +15,9 @@ const { abHeartbeat, abSendNote, findAb } = require('./src/heartbeat.js');
 
 const TOKEN_KEY = 'agentboard.token';
 
-/** @type {{ panel?: vscode.WebviewPanel, watcher?: { close(): void }, timer?: NodeJS.Timeout }} */
+/** @type {{ panel?: vscode.WebviewPanel, watcher?: { close(): void }, timer?: NodeJS.Timeout, tree?: vscode.TreeView<any> }} */
 let state = {};
+let treeProvider = null;
 
 function cfg() {
   const s = vscode.workspace.getConfiguration('agentboard');
@@ -48,12 +51,91 @@ function activate(context) {
       vscode.window.showWarningMessage('AgentBoard: `ab` CLI not found on PATH. Install it with `npm i -g @agentboard/cli`.');
     }
   });
+
+  treeProvider = new BoardTreeProvider(context);
+  state.tree = vscode.window.createTreeView('agentboard.boardView', { treeDataProvider: treeProvider, showCollapseAll: true });
+  state.tree.onDidChangeVisibility((e) => {
+    if (e.visible) startSession(context);
+    else maybeStopSession();
+  });
+
   context.subscriptions.push(
     vscode.commands.registerCommand('agentboard.setToken', () => setToken(context)),
     vscode.commands.registerCommand('agentboard.openBoard', () => openBoard(context)),
     vscode.commands.registerCommand('agentboard.joinBoard', () => joinBoard(context)),
     vscode.commands.registerCommand('agentboard.sendNote', () => sendNote(context)),
+    vscode.commands.registerCommand('agentboard.refresh', () => refreshAll(context)),
   );
+
+  // Exposed for the UI tests (and advanced users).
+  return {
+    setToken: (token) => context.secrets.store(TOKEN_KEY, token),
+    getToken: () => getToken(context),
+    treeProvider,
+    refresh: () => refreshAll(context),
+  };
+}
+
+// ---------------------------------------------------------------- sidebar tree
+
+class BoardTreeProvider {
+  constructor(context) {
+    this.context = context;
+    this.view = { agents: [], messages: [] };
+    this._onDidChangeTreeData = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+  }
+
+  setView(view) {
+    this.view = view;
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element) {
+    return element;
+  }
+
+  getChildren(element) {
+    if (!element) {
+      return [
+        new vscode.TreeItem('Agents', vscode.TreeItemCollapsibleState.Collapsed),
+        new vscode.TreeItem('Messages', vscode.TreeItemCollapsibleState.Collapsed),
+      ];
+    }
+    if (element.label === 'Agents') {
+      return this.view.agents.map((a) => {
+        const item = new vscode.TreeItem(`${a.presence === 'online' ? '●' : '○'} ${a.agentId} — ${a.status}`, vscode.TreeItemCollapsibleState.None);
+        item.description = a.currentTask || (a.roles || []).join(',') || '';
+        return item;
+      });
+    }
+    if (element.label === 'Messages') {
+      return this.view.messages.map((m) => {
+        const payload = typeof m.payload === 'string' ? m.payload : JSON.stringify(m.payload);
+        const item = new vscode.TreeItem(`${m.from} → ${m.to} [${m.type}]`, vscode.TreeItemCollapsibleState.None);
+        item.description = `${m.state} · ${payload}`;
+        item.tooltip = `${m.id} #${m.seq}\n${payload}\n${m.createdAt}`;
+        return item;
+      });
+    }
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------- sessions
+
+async function refreshAll(context) {
+  const c = cfg();
+  const token = await getToken(context);
+  if (!token) return;
+  try {
+    const view = await fetchBoardState({ server: c.server, board: c.board, token });
+    treeProvider?.setView(view);
+    state.panel?.webview.postMessage({ type: 'state', ...view });
+    state.panel?.webview.postMessage({ type: 'status', text: `listening on ${c.board} @ ${c.server}` });
+  } catch (e) {
+    state.panel?.webview.postMessage({ type: 'status', text: `error: ${e.message}` });
+  }
 }
 
 async function openBoard(context) {
@@ -72,31 +154,12 @@ async function openBoard(context) {
   panel.webview.html = webviewHtml();
   state.panel = panel;
 
-  const refresh = async () => {
-    try {
-      const view = await fetchBoardState({ server: c.server, board: c.board, token });
-      panel.webview.postMessage({ type: 'state', ...view });
-      panel.webview.postMessage({ type: 'status', text: `listening on ${c.board} @ ${c.server}` });
-    } catch (e) {
-      panel.webview.postMessage({ type: 'status', text: `error: ${e.message}` });
-    }
-  };
-
-  await refresh();
-  state.watcher = watchBoard({ server: c.server, board: c.board, token }, () => refresh());
-  startHeartbeat(context);
+  await refreshAll(context);
+  startSession(context);
 
   panel.onDidDispose(() => {
     state.panel = undefined;
-    if (state.watcher) {
-      state.watcher.close();
-      state.watcher = undefined;
-    }
-    // No zombie heartbeat timer after the panel closes (#21).
-    if (state.timer) {
-      clearInterval(state.timer);
-      state.timer = undefined;
-    }
+    maybeStopSession();
   });
 }
 
@@ -133,26 +196,20 @@ async function sendNote(context) {
     return;
   }
   vscode.window.showInformationMessage(`AgentBoard: note broadcast to ${c.board}.`);
-  if (state.panel) await refreshPanel(context);
+  await refreshAll(context);
 }
 
-async function refreshPanel(context) {
+async function startSession(context) {
+  if (state.watcher) return;
   const c = cfg();
   const token = await getToken(context);
-  try {
-    const view = await fetchBoardState({ server: c.server, board: c.board, token });
-    state.panel?.webview.postMessage({ type: 'state', ...view });
-  } catch {
-    /* panel shows its own status line */
-  }
-}
+  if (!token) return;
+  state.watcher = watchBoard({ server: c.server, board: c.board, token }, () => refreshAll(context));
 
-function startHeartbeat(context) {
   if (state.timer) clearInterval(state.timer);
-  const c = cfg();
   const tick = async () => {
     const token = await getToken(context);
-    if (!token || !state.panel) return;
+    if (!token || !(state.panel || state.tree?.visible)) return;
     const res = await abHeartbeat({ server: c.server, token, agentId: c.agentId, board: c.board, interval: c.heartbeatInterval });
     if (!res.ok && state.panel) {
       state.panel.webview.postMessage({ type: 'status', text: `heartbeat: ${res.error}` });
@@ -160,6 +217,18 @@ function startHeartbeat(context) {
   };
   tick();
   state.timer = setInterval(tick, c.heartbeatInterval * 1000);
+}
+
+function maybeStopSession() {
+  if (state.panel || state.tree?.visible) return;
+  if (state.watcher) {
+    state.watcher.close();
+    state.watcher = undefined;
+  }
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = undefined;
+  }
 }
 
 function webviewHtml() {
@@ -186,12 +255,12 @@ function webviewHtml() {
   <div id="messages"><p class="meta">no messages yet</p></div>
 <script>
   const vscode = acquireVsCodeApi();
-  let view = { agents: [], messages: [] };
   window.addEventListener('message', (e) => {
     const m = e.data;
     if (m.type === 'state') { view = m; render(); }
     if (m.type === 'status') document.getElementById('status').textContent = m.text;
   });
+  let view = { agents: [], messages: [] };
   function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
   function render() {
     document.getElementById('agents').innerHTML = view.agents.length

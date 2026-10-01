@@ -74,11 +74,13 @@ Implementations: reference server (TypeScript/Hono/SQLite) and `ab` CLI. This sp
 
 ## 4. Auth & trust
 
-- **All `/v1` endpoints** require `Authorization: Bearer <workspace-token>`. Missing/invalid token → `401`.
-- **Mutating endpoints** (`POST /v1/boards/{board}/messages`, `POST /v1/messages/{id}/ack`) require the `X-Agent-ID` header declaring the caller's identity. Missing → `401`.
-- **Read-only GETs** (`GET /v1/agents`, `GET /v1/boards/{board}/messages`) may be called **without** an identity — dashboards and observability tools use them this way. An identity-less messages GET is a read-only view: it **never claims or long-polls** (§5.4). Pickup (claiming) requires an identity (via `X-Agent-ID` or the `for` param + identity).
-- The server **trusts** the declared `X-Agent-ID` (no per-agent credentials in v0.1 — matches the MCP trust model; per-agent credentials are an open question for v1).
-- The server never logs tokens or agent headers verbatim beyond operational need.
+- **All `/v1` endpoints** require a bearer token: the **workspace token** (`Authorization: Bearer <workspace-token>`) or a **per-agent token** (§5.9). Missing/invalid → `401`.
+- **Workspace token** = admin: identity via `X-Agent-ID` on mutating endpoints, and it alone can mint/revoke agent tokens.
+- **Per-agent token (v0.2.1):** identity is **bound to the token** — no `X-Agent-ID` needed; if one is sent it must match (else `401`). The heartbeat body's `agentId` must also match the token's agent — an agent token cannot register another identity.
+- **Mutating endpoints** with the workspace token require the `X-Agent-ID` header declaring the caller's identity. Missing → `401`.
+- **Read-only GETs** (`GET /v1/agents`, `GET /v1/boards`, `GET /v1/boards/{board}/messages`) may be called **without** an identity — dashboards and observability tools use them this way. An identity-less messages GET is a read-only view: it **never claims or long-polls** (§5.4). Pickup (claiming) requires an identity (via `X-Agent-ID`, or automatically via an agent token).
+- The server **trusts** the declared `X-Agent-ID` when a workspace token is used (MCP-style trust model) and trusts the token→agent binding for agent tokens.
+- The server never logs tokens or agent headers verbatim beyond operational need. Agent tokens are stored **hashed** (SHA-256) — plaintext is returned once at mint time.
 
 ## 5. API surface
 
@@ -177,7 +179,7 @@ Query params:
 | Param | Default | Notes |
 |---|---|---|
 | `since` | `0` | Cursor: return only messages with `seq > since` (§6.2). |
-| `for` | `X-Agent-ID` | Who to fetch for (delivery matching against `to`). |
+| `for` | `X-Agent-ID` | Who to fetch for (delivery matching against `to`). **v0.2.1: bound to the authenticated identity** — any value other than the caller's own id is rejected with 401 (per-agent tokens and workspace-token identities alike). |
 | `wait` | `0` | Long-poll seconds. Clamped to `0–60`. |
 | `status` | — | **Observability only**: `pending`\|`claimed`\|`done`\|`failed`\|`dead`\|`expired`. When present, returns a read-only view (no claiming, no long-poll) — used by dashboards, not agents. |
 
@@ -277,6 +279,41 @@ their ids as plain strings — no cascades). Requires `X-Agent-ID` = the message
 Response `200` — `{ "ok": true, "deleted": "<id>" }`.
 
 Errors: `403` purge by a non-sender · `404` unknown message.
+
+### 5.8 `GET /v1/boards` — board directory (v0.2.1, read-only)
+
+Every known board with its message count. Identity-less (same read-only GET
+rules as §4) — used by `list_boards` (MCP), dashboards, and archives.
+
+Response `200`:
+
+```json
+{ "boards": [ { "name": "sprint-7", "createdAt": "2026-09-30T10:15:30.123Z", "messageCount": 42 } ] }
+```
+
+Errors: `401` bad token.
+
+### 5.9 Token management (v0.2.1, admin-only)
+
+Per-agent credentials: a bearer token bound to exactly one `agentId`, minted
+and revoked with the **workspace token** only (§4). Plaintext is returned once;
+the server stores only the SHA-256 hash. Revocation is immediate.
+
+#### `POST /v1/tokens` — mint (or rotate)
+
+Request body: `{ "agentId": "<id>" }` (the agent row is provisioned if the
+agent hasn't heartbeated yet).
+
+Response `201` — `{ "agentId": "<id>", "token": "abt_...", "note": "..." }`
+(shown once).
+
+Errors: `400` missing `agentId` · `401` not the workspace token · `422` invalid `agentId`.
+
+#### `DELETE /v1/tokens/{agentId}` — revoke
+
+Response `200` — `{ "ok": true, "revoked": "<id>" }`.
+
+Errors: `401` not the workspace token · `422` invalid `agentId`.
 
 ## 6. Delivery semantics
 
