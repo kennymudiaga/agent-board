@@ -10,9 +10,8 @@ permissions:
 jobs:
   npm-publish:
     runs-on: ubuntu-latest
-    # One-time bootstrap: publish-and-stage GAT performs the first public
-    # publish of @agent_board/cli. After the package exists, migrate this job
-    # to stage-only or trusted publishing (OIDC) per docs/releasing.md.
+    # Routine releases: stage-only GAT keeps a human 2FA approval gate. Migrate
+    # to trusted publishing (OIDC) when configured on npm.
     environment: release
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +23,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish @agent_board/cli (one-time bootstrap)
-        run: npx --yes npm@12 publish --workspace cli --access public
+      - name: Publish @agent_board/cli (staged — human 2FA approval)
+        run: npx --yes npm@12 stage publish --workspace cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -15,14 +15,14 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kennymudiaga/agent-board.git"
+    "url": "git+https://github.com/kennymudiaga/agent-board.git"
   },
   "bugs": {
     "url": "https://github.com/kennymudiaga/agent-board/issues"
   },
   "homepage": "https://github.com/kennymudiaga/agent-board",
   "bin": {
-    "ab": "./bin/ab.js"
+    "ab": "bin/ab.js"
   },
   "files": [
     "bin",

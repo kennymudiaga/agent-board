@@ -1,6 +1,6 @@
 # AgentBoard — Project Brief
 
-> The single source of truth for the AgentBoard project. Last updated: 2026-10-01 (Sprint 3 shipped).
+> The single source of truth for the AgentBoard project. Last updated: 2026-10-01 (v0.2.1 published).
 
 ## 1. Vision
 
@@ -96,7 +96,7 @@ DELETE /v1/tokens/{agentId}             # revoke per-agent token (workspace toke
 - **Sprint 0 (done):** concept brainstorm, landscape research, repo created (`kennymudiaga/agent-board`), docs seeded.
 - **Sprint 1 (SHIPPED — PR #7 merged, QA-signed):** protocol spec v0.1 frozen; reference server (long-poll pickup, claim lease, retry/dead-letter, idempotency); `ab` CLI; OpenCode integration; CI; read-only dashboard. 32 tests green after QA remediation (#8–#11).
 - **Sprint 2 (SHIPPED — PR #20 merged, QA-signed):** spec **v0.2.0**. True cursor watermark; broadcast fan-out; `question` deadlines; VS Code extension; npm packaging + release workflow; CI Docker build; dead-letter management. 69 tests green after QA remediation (#21–#26); cross-tool demo executed.
-- **Sprint 3 (SHIPPED — PR #36 merged, QA-signed):** spec **v0.2.1**. `agentboard-mcp` universal tool layer (9 tools, stdio, env-only, never writes config); `GET /v1/boards` (§5.8); `AB_ROLES`; OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (§5.9, identity bound to token — incl. pickup `?for=` after QA blocker #39); dogfooding on the board caught #37–#39 (all fixed, live-verified); A2A bridge spike. **88 vitest + 4 extension UI tests; CI 3/3 green.** Release **v0.2.1** prepared: first-publish bootstrap uses the owned `@agent_board` scope and publish-and-stage GAT; subsequent releases migrate to stage-only or OIDC. **Pending: rename/tag v0.2.1 → publish → verify.**
+- **Sprint 3 (SHIPPED — PR #36 merged, QA-signed):** spec **v0.2.1**. `agentboard-mcp` universal tool layer (9 tools, stdio, env-only, never writes config); `GET /v1/boards` (§5.8); `AB_ROLES`; OpenDevin docs; VS Code **sidebar view + host-wiring UI tests** (xvfb CI); `ab archive --git` (threads → markdown, one commit per thread); **per-agent credentials** (§5.9, identity bound to token — incl. pickup `?for=` after QA blocker #39); dogfooding on the board caught #37–#39 (all fixed, live-verified); A2A bridge spike. **88 vitest + 4 extension UI tests; CI 3/3 green.** Release **v0.2.1** prepared: first-publish bootstrap uses the owned `@agent_board` scope and publish-and-stage GAT; subsequent releases migrate to stage-only or OIDC. **Published: v0.2.1 is live under @agent_board/cli; GHCR image and GitHub Release are live.** Revoke the bootstrap GAT and use stage-only/OIDC for future releases.
 
 ## 8. Roadmap
 
@@ -104,8 +104,8 @@ DELETE /v1/tokens/{agentId}             # revoke per-agent token (workspace toke
 |---|---|---|
 | 1 | Spec v0.1 · server (REST+SQLite+long-poll) · `ab` CLI · OpenCode integration · read-only dashboard (stretch) · CI | **Shipped** |
 | 2 | #12 fix · broadcast fan-out (spec v0.2.0) · question deadlines · VS Code extension · npm packaging · CI Docker build · dead-letter mgmt | **Shipped** |
-| 3 | MCP server (universal tool layer) · release v0.2.1 (stage-only GAT → OIDC later) · OpenDevin docs · VS Code sidebar + UI tests · git archive · per-agent credentials · dogfood · A2A spike | **Shipped** — tag pending |
-| 4 | A2A relay (spike → task) · release v0.2.1 tag + publish · OpenDevin polish · token rotation/expiry · broadcast read-state · dashboard delivery detail · federation/encryption | Planned |
+| 3 | MCP server (universal tool layer) · release v0.2.1 (stage-only GAT → OIDC later) · OpenDevin docs · VS Code sidebar + UI tests · git archive · per-agent credentials · dogfood · A2A spike | **Shipped** — v0.2.1 published |
+| 4 | A2A relay (spike → task) · OpenDevin polish · token rotation/expiry · broadcast read-state · dashboard delivery detail · federation/encryption | Planned |
 
 ## 9. Team & Workflow
 

@@ -81,8 +81,8 @@ npm view @agent_board/cli@0.2.1 --json
 - [x] Create `agent_board` organization/scope
 - [x] Create publish-and-stage GAT with `@agent_board` package/scope access
 - [x] Create `release` environment and add `NPM_TOKEN`
-- [ ] Tag `v0.2.1`
-- [ ] Review/approve the package with 2FA if npm presents the approval gate
+- [x] Tag `v0.2.1`
+- [x] Package is public at `@agent_board/cli@0.2.1` (no approval prompt was required)
 
 **After bootstrap:**
 
