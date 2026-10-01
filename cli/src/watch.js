@@ -149,15 +149,17 @@ export async function cmdWatch(flags, json) {
     throw new CliError(`cannot reach server at ${cfg.server} (${e.message})`);
   }
 
-  // Push path: dashboard SSE stream (workspace token; 'message' events on new
-  // mail). Falls back to polling when the token is rejected.
+  // Push + poll: the dashboard SSE stream (workspace token) is a fire-and-
+  // forget ACCELERATOR — instant wake when it works. The poll loop ALWAYS
+  // runs (deterministic; a hung/buffered stream must not starve it — Bun's
+  // fetch can buffer SSE). Dedupe is by message id + head, so concurrent
+  // refreshes cannot double-fire.
   const abort = new AbortController();
-  let mode = 'poll';
-  try {
-    const streamUrl = `${cfg.server}/v1/events?board=${encodeURIComponent(board)}&token=${encodeURIComponent(cfg.token)}`;
-    const res = await fetch(streamUrl, { signal: abort.signal });
-    if (res.ok && res.body) {
-      mode = 'sse';
+  (async () => {
+    try {
+      const streamUrl = `${cfg.server}/v1/events?board=${encodeURIComponent(board)}&token=${encodeURIComponent(cfg.token)}`;
+      const res = await fetch(streamUrl, { signal: abort.signal });
+      if (!res.ok || !res.body) return;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -176,25 +178,21 @@ export async function cmdWatch(flags, json) {
           }
         }
       }
+    } catch {
+      /* stream rejected or aborted — polling continues */
     }
-  } catch {
-    /* stream ended or rejected — poll fallback below */
-  }
+  })();
 
-  // Poll fallback (agent-scoped token, stream hiccup, or --once exit).
-  if (mode === 'poll' && !onceDone()) {
-    if (!json) console.log(`[watch] polling ${board} every ${interval}s (no SSE stream)`);
-    while (!onceDone()) {
-      await sleep(interval * 1000);
-      try {
-        await refresh();
-      } catch (e) {
-        process.stderr.write(`[watch] refresh failed: ${e.message}\n`);
-      }
+  while (!onceDone()) {
+    await sleep(interval * 1000);
+    try {
+      await refresh();
+    } catch (e) {
+      process.stderr.write(`[watch] refresh failed: ${e.message}\n`);
     }
   }
 
   if (json) {
-    console.log(JSON.stringify({ board, forId, mode, fired }));
+    console.log(JSON.stringify({ board, forId, fired }));
   }
 }
