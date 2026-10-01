@@ -556,6 +556,18 @@ export class Store {
   }
 
   /**
+   * Direct replies to a message (thread children), oldest first. Sweeps the
+   * board first so callers observe fresh states (used by the A2A relay).
+   */
+  listReplies(messageId: string, now: number): MessageRecord[] {
+    const row = this.getRow(messageId);
+    if (!row) return [];
+    this.sweep(row.board, now);
+    const rows = this.db.prepare('SELECT * FROM messages WHERE reply_to = ? ORDER BY seq ASC').all(messageId) as MessageRow[];
+    return rows.map((r) => toMessage(r));
+  }
+
+  /**
    * Ack a claimed message (or, for broadcasts, the caller's delivery).
    * Returns the updated message, `notFound`, or a `conflict` reason
    * (`not_claimer` | `invalid_transition`).
