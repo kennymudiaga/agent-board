@@ -40,6 +40,19 @@ describe('dashboard (T6 stretch)', () => {
     expect(await res.text()).toContain('AGENTBOARD');
   });
 
+  it('renders per-reader delivery detail for broadcasts (sprint 5 T7)', async () => {
+    const html = await (await app.request('/')).text();
+    // The expander scaffolding: summary from the reads aggregate + one row per
+    // delivery (reader -> state -> attempts).
+    expect(html).toContain('class="reads"');
+    expect(html).toContain('reads: ');
+    expect(html).toContain('class="read-row"');
+    expect(html).toContain('d.readerId');
+    expect(html).toContain('d.attempts');
+    // The broadcast reads aggregate from T6 is what feeds the summary.
+    expect(html).toContain('m.reads');
+  });
+
   it('requires a valid token on the SSE stream', async () => {
     expect((await app.request('/v1/events')).status).toBe(401);
     expect((await app.request('/v1/events?token=wrong')).status).toBe(401);

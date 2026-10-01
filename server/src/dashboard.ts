@@ -50,6 +50,12 @@ export const DASHBOARD_HTML = `<!doctype html>
   .msg .type { color: var(--muted); }
   .msg .payload { margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
   .msg .reply { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .reads { margin-top: 8px; font-size: 12px; border-top: 1px dashed var(--border); padding-top: 6px; }
+  .reads summary { cursor: pointer; color: var(--muted); user-select: none; }
+  .reads summary:hover { color: var(--accent); }
+  .reads .read-row { display: flex; gap: 8px; align-items: center; padding: 4px 0 0 8px; }
+  .reads .reader { color: var(--accent); }
+  .reads .attempts { color: var(--muted); font-size: 11px; }
   .badge { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid; margin-left: auto; }
   .badge.pending  { color: var(--muted); border-color: var(--border); }
   .badge.claimed  { color: var(--accent); border-color: var(--accent); }
@@ -159,8 +165,29 @@ export const DASHBOARD_HTML = `<!doctype html>
         '<span class="type">[' + escapeHtml(m.type) + ']</span>' +
         '<span class="badge ' + m.state + '">' + m.state + '</span></div>' +
         '<div class="payload">' + escapeHtml(payload) + '</div>' +
+        readsHtml(m) +
         (m.replyTo ? '<div class="reply">↳ replies to ' + escapeHtml(m.replyTo) + '</div>' : '') +
         '</div>';
+    }
+    // Broadcast delivery detail (sprint 5 T7): per-reader read-state expander.
+    function readsHtml(m) {
+      if (!m.deliveries || !m.deliveries.length) return '';
+      var r = m.reads || {};
+      var summary = 'reads: ' + (r.done || 0) + '/' + (r.total || 0) + ' done';
+      var extras = [];
+      if (r.pending) extras.push(r.pending + ' pending');
+      if (r.claimed) extras.push(r.claimed + ' claimed');
+      if (r.dead) extras.push(r.dead + ' dead');
+      if (r.expired) extras.push(r.expired + ' expired');
+      if (extras.length) summary += ' (' + extras.join(', ') + ')';
+      var rows = m.deliveries.map(function (d) {
+        return '<div class="read-row">' +
+          '<span class="reader">' + escapeHtml(d.readerId) + '</span>' +
+          '<span class="badge ' + d.state + '">' + d.state + '</span>' +
+          '<span class="attempts">attempts ' + d.attempts + '</span>' +
+          '</div>';
+      }).join('');
+      return '<details class="reads"><summary>' + escapeHtml(summary) + '</summary>' + rows + '</details>';
     }
     var html = '<ul class="thread">';
     roots.forEach(function (root) {
