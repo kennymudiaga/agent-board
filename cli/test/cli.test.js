@@ -50,6 +50,33 @@ function runCli(args, { cwd, env = {} } = {}) {
   });
 }
 
+/**
+ * Like runCli but injects no AB_* vars and strips any inherited from the
+ * outer process (unless explicitly provided) — for identity-source tests
+ * that must not be skewed by ambient env.
+ */
+function runCliRaw(args, { cwd, env = {} } = {}) {
+  return new Promise((resolvePromise) => {
+    const childEnv = { ...process.env, ...env };
+    for (const k of ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES']) {
+      if (!(k in env)) delete childEnv[k];
+    }
+    execFile(process.execPath, [CLI, ...args], { cwd, env: childEnv }, (err, stdout, stderr) => {
+      resolvePromise({ code: err?.code ?? 0, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * A disposable machine-wide config home: APPDATA (win32) and XDG_CONFIG_HOME
+ * (posix) both point into the temp dir, so `ab init --global` and the global
+ * resolution chain are fully under the test's control.
+ */
+function makeGlobalHome() {
+  const dir = mkdtempSync(join(tmpdir(), 'ab-global-'));
+  return { dir, env: { APPDATA: dir, XDG_CONFIG_HOME: dir } };
+}
+
 function makeWorkspace() {
   return mkdtempSync(join(tmpdir(), 'ab-cli-'));
 }
@@ -76,8 +103,10 @@ describe('ab CLI against the reference server', () => {
 
   it('errors without config and with a bad token', async () => {
     const dir = makeWorkspace();
+    const gh = makeGlobalHome(); // empty global home — no machine config either
     try {
-      const noCfg = await runCli(['send', '--board', 'b', '--to', 'role:qa', '--message', 'x'], { cwd: dir });
+      // No local file, no global file, no env identity.
+      const noCfg = await runCliRaw(['send', '--board', 'b', '--to', 'role:qa', '--message', 'x'], { cwd: dir, env: gh.env });
       expect(noCfg.code).not.toBe(0);
       expect(noCfg.stderr).toContain('ab init');
 
@@ -87,6 +116,7 @@ describe('ab CLI against the reference server', () => {
       expect(badToken.stderr).toContain('bearer token');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(gh.dir, { recursive: true, force: true });
     }
   });
 
@@ -718,6 +748,123 @@ describe('ab CLI against the reference server', () => {
       expect(unknown.stdout).toContain('/ab join sprint-8 as qa');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('init --global writes machine-wide config, never touching the repo (issue #41)', async () => {
+    const dir = makeWorkspace();
+    const gh = makeGlobalHome();
+    try {
+      const r = await runCli(['init', '--global', '--agent-id', 'g-agent', '--roles', 'dev', '--server', baseUrl, '--token', TOKEN], {
+        cwd: dir,
+        env: gh.env,
+      });
+      expect(r.code).toBe(0, r.stderr);
+
+      const cfg = JSON.parse(readFileSync(join(gh.dir, 'agentboard', 'config.json'), 'utf8'));
+      expect(cfg).toMatchObject({ server: baseUrl, token: TOKEN, agentId: 'g-agent', roles: ['dev'] });
+      expect(existsSync(join(dir, '.agentboard.json'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(gh.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('whoami resolves identity env > local > global and reports the source (#41)', async () => {
+    const gh = makeGlobalHome();
+    try {
+      await runCli(['init', '--global', '--agent-id', 'g-agent', '--roles', 'dev', '--server', baseUrl, '--token', TOKEN], {
+        cwd: makeWorkspace(),
+        env: gh.env,
+      });
+      const dir = makeWorkspace();
+      try {
+        // Fresh dir, no local config: identity comes from the global file.
+        const fromGlobal = await runCliRaw(['whoami', '--json'], { cwd: dir, env: gh.env });
+        expect(fromGlobal.code).toBe(0, fromGlobal.stderr);
+        expect(JSON.parse(fromGlobal.stdout)).toMatchObject({ agentId: 'g-agent', roles: ['dev'], server: baseUrl, source: 'global' });
+
+        // Text output names the global path.
+        const text = await runCliRaw(['whoami'], { cwd: dir, env: gh.env });
+        expect(text.stdout).toContain('source  : global');
+        expect(text.stdout).toContain('global ');
+
+        // Local ab init overrides global.
+        const init = await runCli(['init', '--agent-id', 'local-agent', '--roles', 'qa'], { cwd: dir });
+        expect(init.code).toBe(0, init.stderr);
+        const fromLocal = await runCliRaw(['whoami', '--json'], { cwd: dir, env: gh.env });
+        expect(JSON.parse(fromLocal.stdout)).toMatchObject({ agentId: 'local-agent', roles: ['qa'], source: 'local' });
+
+        // Env overrides both.
+        const fromEnv = await runCliRaw(['whoami', '--json'], {
+          cwd: dir,
+          env: { ...gh.env, AB_AGENT_ID: 'env-agent', AB_SERVER: baseUrl, AB_TOKEN: TOKEN },
+        });
+        expect(JSON.parse(fromEnv.stdout)).toMatchObject({ agentId: 'env-agent', source: 'env' });
+
+        // The global file was never erased along the way.
+        const saved = JSON.parse(readFileSync(join(gh.dir, 'agentboard', 'config.json'), 'utf8'));
+        expect(saved).toMatchObject({ agentId: 'g-agent', token: TOKEN });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(gh.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a global identity joins a board without copying its token into the repo (#41)', async () => {
+    const gh = makeGlobalHome();
+    try {
+      await runCli(['init', '--global', '--agent-id', 'g-agent', '--roles', 'dev', '--server', baseUrl, '--token', TOKEN], {
+        cwd: makeWorkspace(),
+        env: gh.env,
+      });
+      const dir = makeWorkspace();
+      try {
+        const joined = await runCliRaw(['join', '--board', 'sprint-7'], { cwd: dir, env: gh.env });
+        expect(joined.code).toBe(0, joined.stderr);
+
+        const local = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+        expect(local.boards).toEqual(['sprint-7']); // membership persisted
+        expect(local.token).toBeUndefined(); // global token never promoted into the repo
+        expect(local.server).toBeUndefined();
+
+        // The global token survives untouched.
+        const global = JSON.parse(readFileSync(join(gh.dir, 'agentboard', 'config.json'), 'utf8'));
+        expect(global.token).toBe(TOKEN);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(gh.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a fresh clone with global config heartbeats without local init; re-init never erases (#41)', async () => {
+    const gh = makeGlobalHome();
+    try {
+      await runCli(['init', '--global', '--agent-id', 'g-agent', '--roles', 'dev', '--server', baseUrl, '--token', TOKEN], {
+        cwd: makeWorkspace(),
+        env: gh.env,
+      });
+      const dir = makeWorkspace();
+      try {
+        // No local config at all — identity resolves from global and works.
+        const hb = await runCliRaw(['heartbeat', '--interval', '15', '--once'], { cwd: dir, env: gh.env });
+        expect(hb.code).toBe(0, hb.stderr);
+        expect(hb.stdout).toContain('g-agent');
+
+        // A re-run of init --global without --agent-id preserves the identity.
+        const again = await runCli(['init', '--global'], { cwd: dir, env: gh.env });
+        expect(again.code).toBe(0, again.stderr);
+        const saved = JSON.parse(readFileSync(join(gh.dir, 'agentboard', 'config.json'), 'utf8'));
+        expect(saved.agentId).toBe('g-agent');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(gh.dir, { recursive: true, force: true });
     }
   });
 });

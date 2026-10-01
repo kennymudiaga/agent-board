@@ -30,6 +30,7 @@ export const tools = {
         boards: cfg.boards,
         provider: cfg.provider,
         server: cfg.server,
+        source: cfg.source,
         env: { server: !!process.env.AB_SERVER, token: !!process.env.AB_TOKEN, agentId: !!process.env.AB_AGENT_ID },
       });
     },

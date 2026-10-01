@@ -4,9 +4,9 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
-import { CONFIG_FILE, configPath, loadConfig, parseList, saveConfig } from './config.js';
+import { CONFIG_FILE, configPath, globalConfigPath, loadConfig, parseList, saveConfig } from './config.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -20,24 +20,34 @@ export async function cmdInit(flags, json) {
   const server = flags.server ?? process.env.AB_SERVER;
   const token = flags.token ?? process.env.AB_TOKEN;
   if (!server || !token) {
-    usage('init requires --server and --token (or AB_SERVER / AB_TOKEN env vars)', 'ab init --server http://localhost:8080 --token <workspace-token> [--agent-id qa-1] [--roles qa,dev] [--provider opencode]');
+    usage(
+      'init requires --server and --token (or AB_SERVER / AB_TOKEN env vars)',
+      'ab init --server http://localhost:8080 --token <workspace-token> [--agent-id qa-1] [--roles qa,dev] [--provider opencode]\n  ab init --global --server <url> --token <t> [--agent-id qa-1] [--roles qa,dev]   machine-wide config (no per-repo re-entry)',
+    );
   }
-  const path = configPath();
+  // --global writes the machine-wide config (issue #41); the local file is
+  // left untouched so a repo can still override the machine with `ab init`.
+  const path = flags.global ? globalConfigPath() : configPath();
   const existing = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  // A plain `ab init` fills omitted identity fields from the global config —
+  // local init overrides global, it does not replace it.
+  const gpath = globalConfigPath();
+  const globalCfg = flags.global || !existsSync(gpath) ? {} : JSON.parse(readFileSync(gpath, 'utf8'));
   const cfg = {
     server,
     token,
-    agentId: flags.agentId ?? existing.agentId,
-    provider: flags.provider ?? existing.provider ?? null,
-    roles: flags.roles !== undefined ? parseList(flags.roles) : existing.roles ?? [],
+    agentId: flags.agentId ?? existing.agentId ?? globalCfg.agentId,
+    provider: flags.provider ?? existing.provider ?? globalCfg.provider ?? null,
+    roles: flags.roles !== undefined ? parseList(flags.roles) : existing.roles ?? globalCfg.roles ?? [],
     boards: existing.boards ?? [],
     cursors: existing.cursors ?? {},
   };
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
   if (json) {
-    console.log(JSON.stringify({ ok: true, path, agentId: cfg.agentId, boards: cfg.boards }));
+    console.log(JSON.stringify({ ok: true, path, global: Boolean(flags.global), agentId: cfg.agentId, boards: cfg.boards }));
   } else {
-    console.log(`initialized ${path}`);
+    console.log(`initialized ${flags.global ? 'global config ' : ''}${path}`);
     console.log(`  server : ${server}`);
     console.log(`  agent  : ${cfg.agentId ?? '(set --agent-id)'}`);
     console.log(`  roles  : ${cfg.roles.join(', ') || '(none)'}`);
@@ -373,12 +383,19 @@ function hashOf(s) {
 
 export async function cmdWhoami(flags, json) {
   const cfg = loadConfig(process.cwd(), { requireFile: false });
+  const sourceText = {
+    env: 'env (AB_SERVER / AB_TOKEN / AB_AGENT_ID)',
+    local: cfg.path,
+    global: `global ${cfg.globalPath}`,
+    none: 'none',
+  }[cfg.source] ?? 'none';
   const info = {
     agentId: cfg.agentId,
     roles: cfg.roles,
     boards: cfg.boards,
     provider: cfg.provider,
     server: cfg.server,
+    source: cfg.source,
     configFile: existsSync(cfg.path),
     env: {
       server: process.env.AB_SERVER !== undefined,
@@ -395,7 +412,8 @@ export async function cmdWhoami(flags, json) {
     console.log(`boards  : ${info.boards.join(', ') || '(none)'}`);
     console.log(`provider: ${info.provider ?? '(unset)'}`);
     console.log(`server  : ${info.server ?? '(unset)'}`);
-    console.log(`config  : ${info.configFile ? cfg.path : 'none (env-only)'}`);
+    console.log(`source  : ${cfg.source}`);
+    console.log(`config  : ${sourceText}`);
     console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles}`);
   }
 }
