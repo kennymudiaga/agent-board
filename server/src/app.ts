@@ -17,6 +17,7 @@ import {
   type Priority,
 } from './db.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { createA2ARoutes } from './a2a.js';
 
 /**
  * AgentBoard reference server — Hono app implementing `docs/spec.md` v0.1.
@@ -514,6 +515,10 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can purge a message');
     return c.json({ ok: true, deleted: id }, 200);
   });
+
+  // --- A2A relay (sprint 4, docs/a2a.md): Agent Card + JSON-RPC 2.0 --------
+
+  app.route('/', createA2ARoutes(store, mailbox));
 
   return app;
 }
