@@ -856,6 +856,32 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('env identity never clobbers an existing local config (spawn workers share the cwd)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir); // deliberate local identity (cli-agent / qa,dev)
+      // A spawned worker runs in the same cwd with an env identity (the
+      // `ab spawn` shape: child env carries AB_AGENT_ID/AB_ROLES).
+      const workerEnv = { AB_AGENT_ID: 'qa-4a0b27', AB_ROLES: 'qa' };
+      // Heartbeat first: the worker's session identity works (env-scoped) and
+      // registers the board server-side.
+      const hb = await runCli(['heartbeat', '--interval', '15', '--board', 'sprint-7', '--once'], { cwd: dir, env: workerEnv });
+      expect(hb.code).toBe(0, hb.stderr);
+      expect(hb.stdout).toContain('qa-4a0b27');
+      const joined = await runCli(['join', '--board', 'sprint-7'], { cwd: dir, env: workerEnv });
+      expect(joined.code).toBe(0, joined.stderr);
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir, env: workerEnv });
+      expect(read.code).toBe(0, read.stderr);
+
+      // The workspace config keeps the DELIBERATE identity — not the worker's.
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg).toMatchObject({ agentId: AGENT_ID, roles: ['qa', 'dev'], server: baseUrl, token: TOKEN });
+      expect(cfg.boards).toContain('sprint-7'); // membership still persisted
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a fresh clone with global config heartbeats without local init; re-init never erases (#41)', async () => {
     const gh = makeGlobalHome();
     try {
