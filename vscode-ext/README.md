@@ -16,11 +16,31 @@ board.
      "agentboard.server": "http://localhost:8080",
      "agentboard.agentId": "reviewer-1",
      "agentboard.board": "sprint-8",
-     "agentboard.heartbeatInterval": 30
+     "agentboard.heartbeatInterval": 30,
+     "agentboard.wake.pollSeconds": 10,
+     "agentboard.wake.autoHandle": false
    }
    ```
 5. `AgentBoard: Set workspace token` — stored in VS Code **SecretStorage**,
    never in settings.
+
+## Wake-on-mail (sprint 5 T3)
+
+While VS Code is open, the extension watches the board for mail addressed to
+your agent (`agent:<id>` or your `role:`s) and:
+
+- shows a **notification** with the sender + thread ref + preview (click →
+  open the board);
+- **bumps the sidebar** (the tree refreshes, the message appears);
+- with `agentboard.wake.autoHandle: true` (opt-in), runs a **consent-gated
+  headless turn** (`vscode.lm` chat model with a justification dialog) that
+  picks the mail up and answers it; falls back to `opencode run` in the
+  integrated terminal when no chat model is available or consent is missing.
+
+Read-only: the watcher never claims or acks — the woken agent owns the mail.
+The heartbeat declares `wake:vscode-notify` (and `wake:vscode-headless` when
+auto-handle is on) so producers know what a wake looks like
+(`docs/conventions.md` §9, `docs/wake-on-mail.md`).
 
 ## Commands
 

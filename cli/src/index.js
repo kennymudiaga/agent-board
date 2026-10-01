@@ -22,7 +22,7 @@ commands:
   join       register board membership
              ab join --board <name> [--board <name2>]
   heartbeat  register + check in (loop)
-             ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--once]
+             ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--board <name>] [--capabilities a,b] [--once]
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
              [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]

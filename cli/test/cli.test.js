@@ -588,6 +588,23 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('heartbeat --capabilities declares wake:* tags in the directory (#53)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      const hb = await runCli(['heartbeat', '--interval', '15', '--board', 'sprint-7', '--capabilities', 'wake:vscode-notify,wake:vscode-headless', '--once', '--json'], { cwd: dir });
+      expect(hb.code).toBe(0, hb.stderr);
+      const data = JSON.parse(hb.stdout);
+      expect(data.agent.capabilities).toEqual(['wake:vscode-notify', 'wake:vscode-headless']);
+
+      const listed = await runCli(['agents', '--board', 'sprint-7', '--json'], { cwd: dir });
+      const me = JSON.parse(listed.stdout).agents.find((a) => a.agentId === AGENT_ID);
+      expect(me.capabilities).toContain('wake:vscode-notify');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('token --ttl-days sets expiry; --rotate mints a replacement that kills the old token (#55)', async () => {
     const dir = makeWorkspace();
     try {
