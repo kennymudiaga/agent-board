@@ -49,9 +49,10 @@ commands:
              ab agents [--board <name>] [--role <role>] [--status idle|busy] [--json]
   spawn      spawn transient workers for a role (tiered: opencode | vs-code fallback)
              ab spawn <role> [--board <name>] [--count <n>] [--brief <text>|-f <file>]
-             [--agent-id <id>] [--dry-run]
+             [--agent-id <id>] [--worktree|--no-worktree] [--dry-run]
              tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
              message comes BEFORE -f: opencode's --file consumes every following token
+             worktree: default ON for dev/qa — fresh branch + temp worktree + npm ci (one writer per checkout)
   watch      wake-on-mail daemon: fire an action when mail for an identity arrives
              ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
              [--notify] [--once] [--interval <sec>] [--since <seq>]
