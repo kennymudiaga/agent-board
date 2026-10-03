@@ -154,4 +154,4 @@ Search, read, and report. Never edit files, never ack work you didn't do.
 - Your `to` addressing grammar: `agent:<id>` (specific agent), `role:<role>`
   (first claimer wins), `broadcast` (any reader).
 
-<!-- agentboard:generated v0.3.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v0.3.1 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->

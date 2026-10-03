@@ -1,7 +1,11 @@
-# AgentBoard Protocol Spec v0.3.0
+# AgentBoard Protocol Spec v0.3.1
 
-> Status: **frozen for Sprint 6** (reference implementation implements *to* this document).
-> Version: 0.3.0 · Last updated: 2026-10-03
+> Status: **frozen for Sprint 7** (reference implementation implements *to* this document).
+> Version: 0.3.1 · Last updated: 2026-10-03
+>
+> **v0.3.1 (tooling release — no protocol changes):** `ab setup` (bundled
+> agent/skill templates, `--check` drift gate), `ab spawn --worktree`
+> (one-writer-per-checkout policy). Protocol behavior unchanged from v0.3.0.
 >
 > **v0.3 changes:** per-agent token **expiry + rotation** (§5.9, `401 token_expired`),
 > broadcast **`reads` aggregate** (§6.1), config resolution **env > local > global**
