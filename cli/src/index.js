@@ -78,7 +78,11 @@ function parseArgs(args) {
         out[key] = a.slice(eq + 1);
       } else {
         const next = args[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
+        // A long flag only consumes the next token when it is a real VALUE —
+        // anything starting with '-' is another flag (dogfood bug: --dry-run
+        // -f brief.md consumed '-f' as the value and dropped the file).
+        // Values that themselves start with '-' need --flag=value syntax.
+        if (next !== undefined && !next.startsWith('-')) {
           out[key] = next;
           i++;
         } else {
