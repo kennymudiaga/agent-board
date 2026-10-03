@@ -104,3 +104,20 @@ change). Absent tags = polling-only (today's behavior).
 - Producers read `GET /v1/agents` (already exposes capabilities) to know what
   a wake will look like before dispatching to `agent:<id>`. Wake is a
   best-effort nudge — the message remains the source of truth.
+
+## 10. One writer per checkout (worktrees)
+
+- **The main checkout belongs to the human.** Any session that will *write
+  code* gets its own `git worktree` when another writer may be active — the
+  shared-checkout bug class (clobbered configs, half-switched branches,
+  surprise rebases) comes from two writers in one tree.
+- **Read-only / coordination sessions** (producer, watcher, reviewer, `ab
+  watch`) need no worktree — they never write.
+- **`ab spawn` defaults dev/qa workers to a fresh branch + temp worktree**
+  (`spawn/<agentId>` under `<tmp>/ab-worktrees/`, dependencies installed with
+  `npm ci`); `--no-worktree` opts out, `--worktree` forces it for other roles.
+  `--dry-run` prints the whole plan (worktree + install + opencode command).
+- **Cleanup:** `git worktree remove <path>` after the worker exits; prune
+  leftovers with `git worktree prune` (branches stay for PRs).
+- **Prefer worktrees over full scratch clones for QA** — same repo objects,
+  no re-download, and the branch is already in the right repo for a PR.

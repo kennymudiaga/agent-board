@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Store } from '../../server/src/db.ts';
 import { createApp } from '../../server/src/app.ts';
+import { createSpawnWorktree, installWorktree } from '../src/commands.js';
 
 const TOKEN = 'cli-test-token';
 const CLI = resolve(import.meta.dirname, '..', 'bin', 'ab.js');
@@ -770,14 +771,14 @@ describe('ab CLI against the reference server', () => {
 
       // Regression: --dry-run consumed '-f' as its value, so the file was
       // never parsed and the DEFAULT brief was used (producer dogfood note).
-      const run = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '-f', 'brief.md'], { cwd: dir });
+      const run = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '--no-worktree', '-f', 'brief.md'], { cwd: dir });
       expect(run.code).toBe(0, run.stderr);
       expect(run.stdout).toContain('-f brief.md'); // the file flag survives
       expect(run.stdout).not.toContain('join the board, pick up a pending request'); // not the default brief
       expect(run.stdout).toContain('nothing executed'); // dry-run held
 
       // A long flag whose value is a flag-like token needs --flag=value.
-      const eq = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '--brief=-f', '-f', 'brief.md'], { cwd: dir });
+      const eq = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '--no-worktree', '--brief=-f', '-f', 'brief.md'], { cwd: dir });
       expect(eq.code).toBe(0, eq.stderr);
       expect(eq.stdout).toContain('-f brief.md');
     } finally {
@@ -793,7 +794,7 @@ describe('ab CLI against the reference server', () => {
       writeFileSync(join(dir, 'brief.md'), 'brief body\n');
 
       const run = await runCli(
-        ['spawn', 'qa', '--board', 'sprint-8', '--count', '2', '--brief', 'review PR #12', '-f', 'brief.md', '--dry-run'],
+        ['spawn', 'qa', '--board', 'sprint-8', '--count', '2', '--brief', 'review PR #12', '-f', 'brief.md', '--dry-run', '--no-worktree'],
         { cwd: dir },
       );
       expect(run.code).toBe(0, run.stderr);
@@ -1074,6 +1075,62 @@ describe('ab CLI against the reference server', () => {
       expect(sent.stderr).toContain('never truncates');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn --worktree plans a fresh branch + worktree for dev/qa; --no-worktree opts out (#78)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+
+      // Default ON for qa: the plan shows the git worktree + the opencode
+      // command pointed at the worktree path.
+      const planned = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run'], { cwd: dir });
+      expect(planned.code).toBe(0, planned.stderr);
+      expect(planned.stdout).toMatch(/git worktree add -b spawn\/qa-[0-9a-f]{6} /);
+      expect(planned.stdout).toContain('ab-worktrees');
+      expect(planned.stdout).toContain('worktrees planned');
+
+      // Opt-out keeps the old shape (spawner cwd).
+      const optedOut = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '--no-worktree'], { cwd: dir });
+      expect(optedOut.code).toBe(0, optedOut.stderr);
+      expect(optedOut.stdout).not.toContain('git worktree add');
+
+      // Default OFF for other roles; --worktree forces it.
+      const otherRole = await runCli(['spawn', 'explore', '--board', 'sprint-8', '--dry-run'], { cwd: dir });
+      expect(otherRole.stdout).not.toContain('git worktree add');
+      const forced = await runCli(['spawn', 'explore', '--board', 'sprint-8', '--dry-run', '--worktree'], { cwd: dir });
+      expect(forced.stdout).toContain('git worktree add');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('createSpawnWorktree makes a real branch + worktree, and installWorktree degrades gracefully (#78)', async () => {
+    const repo = makeWorkspace();
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      execFileSync('git', ['config', 'user.email', 'test@agentboard.local'], { cwd: repo });
+      execFileSync('git', ['config', 'user.name', 'AgentBoard Test'], { cwd: repo });
+      writeFileSync(join(repo, 'file.txt'), 'hi\n');
+      execFileSync('git', ['add', '.'], { cwd: repo });
+      execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+
+      const wt = createSpawnWorktree(repo, 'qa-live1');
+      try {
+        expect(wt.branch).toBe('spawn/qa-live1');
+        expect(existsSync(join(wt.path, 'file.txt'))).toBe(true);
+        const branches = execFileSync('git', ['branch', '--list', wt.branch], { cwd: repo, encoding: 'utf8' });
+        expect(branches).toContain('spawn/qa-live1');
+        // No lockfile -> skip install with a reason instead of failing.
+        expect(installWorktree(wt.path)).toEqual({ installed: false, reason: expect.stringContaining('no package-lock.json') });
+      } finally {
+        execFileSync('git', ['worktree', 'remove', '--force', wt.path], { cwd: repo });
+        execFileSync('git', ['branch', '-D', wt.branch], { cwd: repo });
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

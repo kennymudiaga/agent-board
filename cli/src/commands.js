@@ -4,7 +4,8 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
 import { CONFIG_FILE, configPath, globalConfigPath, loadConfig, parseList, saveConfig } from './config.js';
 
@@ -618,6 +619,43 @@ function execOpencode(args, opts = {}) {
  * Child env carries AB_SERVER/AB_TOKEN/AB_AGENT_ID/AB_ROLES from the spawner
  * config so the worker session heartbeats as the spawned identity.
  */
+/**
+ * Spawn worktree plumbing (issue #78 — one writer per checkout).
+ * A spawned dev/qa worker gets a fresh branch (`spawn/<agentId>`) on a temp
+ * worktree, so it never shares a checkout with the human or another worker.
+ */
+export function spawnWorktreePlan(repoDir, agentId) {
+  return {
+    branch: `spawn/${agentId}`,
+    path: join(tmpdir(), 'ab-worktrees', `${basename(repoDir)}-${agentId}`),
+  };
+}
+
+/** Create the branch + worktree (real git side effect; used by spawn + tests). */
+export function createSpawnWorktree(repoDir, agentId) {
+  const { branch, path } = spawnWorktreePlan(repoDir, agentId);
+  mkdirSync(dirname(path), { recursive: true });
+  execFileSync('git', ['worktree', 'add', '-b', branch, path, 'HEAD'], {
+    cwd: repoDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { branch, path };
+}
+
+/** Install dependencies in a fresh worktree (npm ci when a lockfile exists). */
+export function installWorktree(path) {
+  if (!existsSync(join(path, 'package-lock.json'))) {
+    return { installed: false, reason: 'no package-lock.json — install dependencies manually if needed' };
+  }
+  if (process.platform === 'win32') {
+    execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm ci --no-audit --no-fund'], { cwd: path, stdio: 'inherit' });
+  } else {
+    execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { cwd: path, stdio: 'inherit' });
+  }
+  return { installed: true };
+}
+
 export async function cmdSpawn(flags, json) {
   const cfg = loadConfig();
 
@@ -681,11 +719,31 @@ export async function cmdSpawn(flags, json) {
 
   const spawned = [];
   const commands = [];
+  // One writer per checkout (#78): dev/qa workers default to their own
+  // worktree; other roles (read-only/coordination) do not.
+  const useWorktree = flags.worktree === true ? true : flags.noWorktree ? false : role === 'dev' || role === 'qa';
   for (let i = 0; i < count; i += 1) {
     const agentId = (flags.agentId ?? `${role}-${randomHex()}`) + (i > 0 ? `-${i + 1}` : '');
+    let workdir = process.cwd();
+    let wt = null;
+    if (useWorktree) {
+      const plan = spawnWorktreePlan(process.cwd(), agentId);
+      if (flags.dryRun) {
+        commands.push(`git worktree add -b ${plan.branch} "${plan.path}" HEAD`);
+        if (existsSync(join(process.cwd(), 'package-lock.json'))) commands.push(`npm ci   # in "${plan.path}"`);
+        workdir = plan.path;
+      } else {
+        wt = createSpawnWorktree(process.cwd(), agentId);
+        workdir = wt.path;
+        const inst = installWorktree(wt.path);
+        if (!inst.installed) process.stderr.write(`spawn: ${wt.path}: ${inst.reason}\n`);
+      }
+    }
     // Message first, `-f` last (yargs array option consumes trailing tokens).
-    const args = ['run', '--agent', agent, '--model', model, message, '--dir', process.cwd()];
-    if (file !== undefined) args.push('-f', file);
+    const args = ['run', '--agent', agent, '--model', model, message, '--dir', workdir];
+    // Absolute brief path in worktree mode (the worker's cwd differs from the
+    // spawner's); the user's path as typed otherwise.
+    if (file !== undefined) args.push('-f', useWorktree ? resolve(file) : file);
     const cmdline = ['opencode', ...args.map(shellQuote)].join(' ');
 
     if (flags.dryRun) {
@@ -705,15 +763,21 @@ export async function cmdSpawn(flags, json) {
       process.stderr.write(`error: failed to spawn worker ${agentId}: ${err.message}\n`);
     });
     child.unref(); // fire-and-forget: the worker heartbeats on its own
-    spawned.push({ agentId, pid: child.pid, command: cmdline });
+    spawned.push({ agentId, pid: child.pid, command: cmdline, ...(wt ? { worktree: wt.path, branch: wt.branch } : {}) });
   }
 
   if (json) {
-    console.log(JSON.stringify({ tier, dryRun: Boolean(flags.dryRun), role, board, model, agent, spawned, commands }));
+    console.log(JSON.stringify({ tier, dryRun: Boolean(flags.dryRun), role, board, model, agent, worktree: useWorktree, spawned, commands }));
   } else if (flags.dryRun) {
     for (const c of commands) console.log(c);
-    console.log(`spawn dry run: ${commands.length} worker(s) for role:${role} on ${board} — nothing executed`);
+    console.log(`spawn dry run: ${count} worker(s) for role:${role} on ${board} — nothing executed${useWorktree ? ' (worktrees planned)' : ''}`);
   } else {
-    for (const s of spawned) console.log(`spawned ${s.agentId} (opencode pid=${s.pid}) on ${board} as role:${role}`);
+    for (const s of spawned) {
+      console.log(`spawned ${s.agentId} (opencode pid=${s.pid}) on ${board} as role:${role}`);
+      if (s.worktree) {
+        console.log(`  worktree: ${s.worktree} (branch ${s.branch})`);
+        console.log(`  cleanup:  git worktree remove "${s.worktree}"   # after the worker exits; prune leftovers with \`git worktree prune\``);
+      }
+    }
   }
 }
