@@ -92,7 +92,18 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     provider: file.provider ?? global.provider ?? null,
     roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : Array.isArray(global.roles) ? global.roles : []),
     boards: Array.isArray(file.boards) ? file.boards : Array.isArray(global.boards) ? global.boards : [],
-    cursors: file.cursors && typeof file.cursors === 'object' ? file.cursors : global.cursors && typeof global.cursors === 'object' ? global.cursors : {},
+    // #67: an env-identity session (e.g. an `ab spawn` child sharing the
+    // spawner's cwd) must NEVER inherit the file's cursors — they are the
+    // file identity's per-reader watermarks and can sit far ahead of what a
+    // fresh worker has seen, silently skipping pending mail. Env identities
+    // start from a fresh cursor (first read `since 0`), same class as #58.
+    cursors: envAny
+      ? {}
+      : file.cursors && typeof file.cursors === 'object'
+        ? file.cursors
+        : global.cursors && typeof global.cursors === 'object'
+          ? global.cursors
+          : {},
     // `ab spawn` preferences from the config files (env AB_SPAWN_* wins over these).
     spawn: file.spawn && typeof file.spawn === 'object' ? file.spawn : global.spawn && typeof global.spawn === 'object' ? global.spawn : {},
   };

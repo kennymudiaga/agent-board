@@ -988,4 +988,47 @@ describe('ab CLI against the reference server', () => {
       rmSync(gh.dir, { recursive: true, force: true });
     }
   });
+
+  it('a spawned env-identity worker claims mail the file identity has read past (#67)', async () => {
+    const dir = makeWorkspace();
+    try {
+      // File identity WITHOUT the qa role — so the qa mail is not its own.
+      await initWorkspace(dir, 'dev-file', ['--roles', 'dev']);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once', '--board', 'sprint-7'], { cwd: dir });
+
+      // A request addressed to role:qa lands.
+      const post = await fetch(`${baseUrl}/v1/boards/sprint-7/messages`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'x-agent-id': 'producer-1' },
+        body: JSON.stringify({ to: 'role:qa', type: 'request', payload: { text: 'for the worker' } }),
+      });
+      expect(post.status).toBe(201);
+      const msg = (await post.json()).message;
+
+      // The file-identity session reads: its watermark advances past the qa
+      // request (not addressed to it) and is persisted to the config file.
+      const devRead = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once'], { cwd: dir });
+      expect(devRead.code).toBe(0, devRead.stderr);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.cursors['sprint-7']).toBe(msg.seq); // read past the qa mail
+
+      // The spawned worker (env identity, roles qa, same cwd) heartbeats
+      // (registering its roles — role: matching goes via the directory) and
+      // reads: with #67 it must NOT inherit the file cursor, so it starts
+      // fresh and claims the qa request.
+      const workerEnv = { AB_AGENT_ID: 'qa-worker', AB_ROLES: 'qa' };
+      const hb = await runCli(['heartbeat', '--interval', '15', '--board', 'sprint-7', '--once'], { cwd: dir, env: workerEnv });
+      expect(hb.code).toBe(0, hb.stderr);
+      const workerRead = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--json'], {
+        cwd: dir,
+        env: workerEnv,
+      });
+      expect(workerRead.code).toBe(0, workerRead.stderr);
+      expect(workerRead.stdout).toContain(msg.id);
+      expect(workerRead.stdout).toContain('claimed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
