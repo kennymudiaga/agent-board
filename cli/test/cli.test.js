@@ -1031,4 +1031,49 @@ describe('ab CLI against the reference server', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('a long response (>300 chars) arrives intact — the pipeline never truncates (#68)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      await runCli(['heartbeat', '--once', '--board', 'sprint-7'], { cwd: dir });
+
+      const longText =
+        'Verdict: APPROVED with nits. The refactor is sound and the new tests cover the ' +
+        'regression paths we discussed. Please (1) rename the two ambiguous variables in ' +
+        'src/parser.js to match the naming conventions, (2) add a comment explaining why the ' +
+        'fallback branch exists, and (3) squash the WIP commits before merge. Once those ' +
+        'cosmetic items are addressed the PR is good to go from my side. This sentence exists ' +
+        'only to push the payload well past the 300-character mark that QA observed being cut.';
+      expect(longText.length).toBeGreaterThan(300);
+
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--type', 'response', '--message', longText, '--json'], { cwd: dir });
+      expect(sent.code).toBe(0, sent.stderr);
+      const msg = JSON.parse(sent.stdout);
+      expect(msg.payload.text).toBe(longText); // byte-for-byte intact
+
+      // And it reads back verbatim.
+      const read = await runCli(['read', '--board', 'sprint-7', '--wait', '0', '--once', '--json'], { cwd: dir });
+      expect(read.stdout).toContain(longText);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the send guard rejects oversized messages loudly instead of cutting (#68)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+
+      const huge = 'x'.repeat(5000);
+      const sent = await runCli(['send', '--board', 'sprint-7', '--to', 'agent:cli-agent', '--message', huge], { cwd: dir });
+      expect(sent.code).not.toBe(0);
+      expect(sent.stderr).toContain('4096');
+      expect(sent.stderr).toContain('never truncates');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
