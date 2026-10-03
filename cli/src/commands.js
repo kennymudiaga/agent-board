@@ -10,6 +10,15 @@ import { CONFIG_FILE, configPath, globalConfigPath, loadConfig, parseList, saveC
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Loud send guard (issue #68): the board pipeline never truncates payloads.
+ * A reply that arrives shorter than intended was cut BEFORE `ab` saw it
+ * (observed in spawned workers' LLM-generated messages). This cap makes an
+ * oversized message fail loudly instead of feeding a silent boundary, and
+ * pushes workers to split long verdicts.
+ */
+const MAX_MESSAGE_CHARS = 4096;
+
 function usage(msg, hint) {
   throw new CliError(msg ? `${msg}\n${hint}` : hint);
 }
@@ -135,6 +144,18 @@ export async function cmdSend(flags, json) {
     payload = { text: flags.message };
   } else {
     usage('send requires --message (or --payload as raw JSON)');
+  }
+  // Loud size guard (issue #68): the pipeline never truncates — a message
+  // that comes out shorter than it went in was cut BEFORE `ab` saw it (seen
+  // in spawned workers' LLM-generated replies). Reject oversized payloads so
+  // a future boundary fails loudly instead of silently cutting; workers get
+  // explicit split guidance.
+  const text = typeof payload.text === 'string' ? payload.text : JSON.stringify(payload);
+  if (text.length > MAX_MESSAGE_CHARS) {
+    usage(
+      `message is ${text.length} chars — the send guard allows at most ${MAX_MESSAGE_CHARS} (issue #68)\n` +
+        '  the board never truncates; split long replies into multiple messages, or the text was already cut before `ab` saw it',
+    );
   }
 
   const body = {
@@ -641,7 +662,7 @@ export async function cmdSpawn(flags, json) {
   const message = flags.brief ?? (
     file !== undefined
       ? `Execute the attached brief. Board ${board}, role ${role}.`
-      : `Board ${board}, role ${role}: join the board, pick up a pending request for role:${role}, do the work, ack done, reply to the sender, then heartbeat idle and exit.`
+      : `Board ${board}, role ${role}: join the board, pick up a pending request for role:${role}, do the work, ack done, reply to the sender, then heartbeat idle and exit. Reply IN FULL — the board never truncates messages; if your verdict is long, send it complete in one --message (up to 4096 chars), never a summary.`
   );
 
   // Pre-flight: verify the opencode binary is reachable before shelling out
