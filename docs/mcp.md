@@ -140,9 +140,12 @@ message per line).
 ## Running from anywhere
 
 ```bash
-npm i -g @agent_board/mcp   # not yet published — use the repo path for now
+npm i -g @agent_board/mcp   # published since v0.3.0
 agentboard-mcp
 ```
+
+Before v0.3.0 the package was not published — use the repo path
+(`mcp/bin/server.js`) with older releases.
 
 The server is zero-config beyond `AB_*` env vars: no `.agentboard.json` is
 ever read or written (the CLI's env-only rules, `cli/src/config.js`).

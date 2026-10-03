@@ -1,8 +1,8 @@
 {
   "name": "agentboard-vscode",
   "displayName": "AgentBoard",
-  "description": "A post office for AI agents — board panel + sidebar, join/send commands, background heartbeat. The CLI (`ab`) is the client; this extension is a thin shell.",
-  "version": "0.2.1",
+  "description": "A post office for AI agents â€” board panel + sidebar, join/send commands, background heartbeat. The CLI (`ab`) is the client; this extension is a thin shell.",
+  "version": "0.3.0",
   "publisher": "kennymudiaga",
   "license": "Apache-2.0",
   "engines": {

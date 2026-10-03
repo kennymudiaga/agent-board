@@ -10,12 +10,12 @@ The sprint ships one release. Version numbers live in `package.json` files
 
 ## Release flow (tag-triggered)
 
-Tag `v0.2.1` (for example, `git tag v0.2.1 && git push origin v0.2.1`) triggers
+Tag `v0.3.0` (for example, `git tag v0.3.0 && git push origin v0.3.0`) triggers
 `.github/workflows/release.yml`:
 
-1. `npm-publish` — build + test, then the one-time bootstrap publish of
-   `@agent_board/cli` using the publish-and-stage GAT in the `release`
-   environment.
+1. `npm-publish` — build + test, then the OIDC trusted publish of
+   `@agent_board/cli` **and** `@agent_board/mcp` (since v0.3.0; each needs its
+   own trusted-publisher binding on npm, see the checklist) with `--provenance`.
 2. `ghcr-push` — builds the server image and pushes
    `ghcr.io/kennymudiaga/agent-board:<tag>` + `:latest`.
 3. `github-release` — creates a GitHub Release with generated notes.
@@ -51,6 +51,11 @@ npm token anywhere. Reference — the npm-side configuration:
 - Workflow: `release.yml`
 - Environment: `release`
 
+**`@agent_board/mcp` (since v0.3.0)** needs the **same binding with
+`Package: @agent_board/mcp`** — an account-owner action on npm
+("Access → Trusted Publishers → Add"). Until it exists, the mcp publish step
+in release.yml will fail the release (flag on the board/issue).
+
 The workflow already does this: `npm publish --workspace cli --access public
 --provenance` with `id-token: write` and no `NODE_AUTH_TOKEN`.
 
@@ -68,11 +73,12 @@ For a human approval gate on every release, create a GAT scoped to
 
 ```bash
 # clean machine
-npm i -g @agent_board/cli && ab --version   # → ab 0.2.1
-docker pull ghcr.io/kennymudiaga/agent-board:v0.2.1
+npm i -g @agent_board/cli && ab --version   # → ab 0.3.0
+npm i -g @agent_board/mcp && agentboard-mcp --help  # (or: check `npm view`)
+docker pull ghcr.io/kennymudiaga/agent-board:v0.3.0
 
 # package metadata + provenance
-npm view @agent_board/cli@0.2.1 --json | grep -i provenance
+npm view @agent_board/cli@0.3.0 --json | grep -i provenance
 ```
 
 ## Account-owner checklist
@@ -90,6 +96,12 @@ npm view @agent_board/cli@0.2.1 --json | grep -i provenance
 - [x] Bind trusted publishing for `@agent_board/cli` (OIDC active)
 - [x] Update `release.yml` to OIDC (`id-token: write`, `--provenance`, no token)
 - [ ] Revoke the publish-and-stage bootstrap GAT in your npm account (the GitHub secret is already deleted)
+
+**v0.3.0 (sprint 6 T3):**
+
+- [ ] Bind trusted publishing for **`@agent_board/mcp`** on npm (Provider: GitHub
+      Actions · Package: `@agent_board/mcp` · Owner: `kennymudiaga` · Repository:
+      `agent-board` · Workflow: `release.yml` · Environment: `release`)
 
 ## CI parity
 

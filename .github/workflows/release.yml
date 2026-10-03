@@ -29,6 +29,11 @@ jobs:
       - run: npm test
       - name: Publish @agent_board/cli (trusted publishing, provenance)
         run: npx --yes npm@12 publish --workspace cli --access public --provenance
+      # @agent_board/mcp published since v0.3.0 (sprint 6 T3 decision). Needs
+      # its own trusted-publisher binding on npm (same provider/workflow/
+      # environment as the CLI) — account-owner action, see docs/releasing.md.
+      - name: Publish @agent_board/mcp (trusted publishing, provenance)
+        run: npx --yes npm@12 publish --workspace mcp --access public --provenance
 
   ghcr-push:
     runs-on: ubuntu-latest
