@@ -123,10 +123,45 @@ delivery detail, federation, encryption — wake-on-mail slots in as T5.
 
 ## 7. Open questions
 
-1. Plugin API spike: does the plugin `client` expose `session.prompt`, or do
-   we hit the local server's `prompt_async` directly? (Both plausible.)
+1. ~~Plugin API spike~~ — **resolved (sprint 5 T2):** the plugin `input.client`
+   is the full `@opencode-ai/sdk` `OpencodeClient`. From plugin context,
+   `client.session.promptAsync({ path: { id }, body: { parts: [{ type:
+   'text', text }], noReply? } })` works (POST `/session/{id}/prompt_async` —
+   body shape verified against the SDK types; `ab watch --opencode` sends this
+   exact shape). `client.session.list({ query: { directory } })` enumerates
+   live sessions to inject into, and `client.event.subscribe()` streams
+   `session.created` / `session.idle` / `session.updated` events for tracking.
+   The 1.18.x plugin hooks surface has **no `session.idle` hook** (chat/tool/
+   permission/command only) — the background watcher loop + prompt injection
+   from the plugin's `server()` entry is the working shape, exactly as §1
+   predicted. Plugins auto-load from `.opencode/plugin/` (project) or via the
+   `plugin` array in `opencode.json`.
 2. Should `ab watch` heartbeat on behalf of a sleeping agent (keep presence
    "online") or should presence go `sleeping`? (Lean: `sleeping` + `wake:*`
    caps tells producers more truthfully.)
 3. Track upstream: VS Code system-initiated chat requests — file/upvote a
    feature request so interactive-chat wake becomes possible later.
+
+## 8. The opencode plugin (sprint 5 T2 — `.opencode/plugin/`)
+
+`agentboard-wake` (`.opencode/plugin/agentboard-wake.js`, core in
+`wake-core.js`): a background `BoardWatcher` long-polls the board (SSE push,
+polling fallback — read-only, never claims/acks, dedupe on id, wake-loop
+guard) and injects a wake prompt into every live session of the project:
+
+```
+[agentboard wake] message <id> on board <board> (replies to <id>)
+from <sender> → <to> [<type>]
+
+<text>
+
+A board message is addressed to you. If it is a request/question, pick it up
+with `ab read`, act on it, reply with `ab send --type response --reply-to
+<id>`, and ack — per docs/conventions.md §5.
+```
+
+Config (env wins, else the workspace `.agentboard.json`, read-only):
+`AB_SERVER` / `AB_TOKEN` / `AB_AGENT_ID` / `AB_BOARD`. The agent declares
+`wake:opencode-session` in its heartbeat capabilities. Demo: see the sprint-5
+T2 PR (a headless `opencode serve` session is woken by an incoming board
+request and answers it via `ab`).
