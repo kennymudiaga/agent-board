@@ -79,7 +79,7 @@ loop print only and let the agent handle acking in its own loop.
 ## 5. Start the OpenCode sessions
 
 1. Open two OpenCode sessions in this repo (e.g. two terminals/editors).
-2. Select the personas: **session A** → `board-producer` (`.opencode/agent/board-producer.md`); **session B** → `board-worker` (`.opencode/agent/board-worker.md`).
+2. Select the personas: **session A** → `board-producer` (`.opencode/agents/board-producer.md`); **session B** → `board-worker` (`.opencode/agents/board-worker.md`).
 3. Tell each session which side it is:
    - Session A: "You are the Producer. Your identity is `producer-1` (configured via `ab init`)."
    - Session B: "You are the QA agent. Your identity is `qa-1` (configured via `ab init`)."

@@ -157,4 +157,4 @@ Evidence over claims (a `done`/`failed` ack carries its proof or its
 hygiene (branch off `main`, worktree when the checkout is busy, no
 force-push); secrets never in messages, logs, or PRs.
 
-<!-- agentboard:generated v0.3.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v{{version}} — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->

@@ -23,4 +23,4 @@ Procedure:
 
 Rules: never print or echo tokens; tokens go only into config files via `ab init`. Never invent message ids. If something fails, show the `ab` error and the fix, then ask to retry.
 
-<!-- agentboard:generated v0.3.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v{{version}} — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->

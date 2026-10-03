@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
 import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
 import { cmdWatch } from './watch.js';
+import { cmdSetup } from './setup.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -55,6 +56,11 @@ commands:
              ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
              [--notify] [--once] [--interval <sec>] [--since <seq>]
              read-only (never claims/acks); message data passes to --exec via AB_WATCH_* env only
+  setup      install the bundled agent/skill/command templates (single source of truth)
+             ab setup [--host opencode|claude|vscode|all]   workspace install (generated copies)
+             ab setup --global [--host ...]                 user-level install (once per machine)
+             ab setup --check                               drift gate (exit 1) — CI uses this
+             [--force] [--dry-run]
 
 global options:
   --json     machine-readable JSON on stdout
@@ -122,6 +128,7 @@ const COMMANDS = {
   agents: cmdAgents,
   spawn: cmdSpawn,
   watch: cmdWatch,
+  setup: cmdSetup,
 };
 
 async function main() {

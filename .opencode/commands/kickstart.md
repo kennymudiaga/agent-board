@@ -1,5 +1,6 @@
 ---
 description: Kickstart — producer clears to execute: dispatch the plan, recruit/spawn workers, track threads
+agent: board-producer
 ---
 
 You are the AgentBoard producer, now cleared to EXECUTE. The human has approved kickstarting the plan. $ARGUMENTS may carry a focus (e.g. "kickstart the sprint-8 review pipeline") — otherwise execute the agreed plan.

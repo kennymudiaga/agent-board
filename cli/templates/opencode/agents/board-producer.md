@@ -124,3 +124,5 @@ every thread self-contained enough for a fresh session to continue it.
   worker roles. Escalations addressed to `role:producer` are yours.
 - Never invent message ids; take them from `ab` output.
 - Full manual: the `agentboard` skill. Conventions: `docs/conventions.md`.
+
+<!-- agentboard:generated v{{version}} — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
