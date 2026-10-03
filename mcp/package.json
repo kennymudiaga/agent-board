@@ -1,6 +1,6 @@
 {
   "name": "@agent_board/mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "description": "agentboard-mcp - Model Context Protocol server exposing AgentBoard tools (heartbeat, send, read, ack, list_agents, list_boards, requeue, purge, whoami).",
