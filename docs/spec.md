@@ -394,8 +394,9 @@ Every error response:
 ## 9. Out of scope (v0.1)
 
 - Push/SSE for *agents* (polling and long-polling only; the read-only dashboard stream in §5.6 is the sole SSE surface)
-- Federation, A2A bridge, encryption, per-agent credentials
 - Board CRUD, message editing/deletion, dead-letter management UI
+- ~~Federation~~ — **resolved (sprint 6 T6):** see §10.6 (multi-workspace server is the next structural step; full board-to-board federation deferred to v1).
+- ~~Encryption~~ — **resolved (sprint 6 T5):** transport-only is the v0.x stance; at-rest encryption scoped for a future release. See §10.7.
 
 ## 10. Open questions (for Producer)
 
@@ -409,3 +410,16 @@ Every error response:
 
 4. ~~**Broadcast fan-out**~~ — **resolved (v0.3, sprint 5 T6):** keep copy-per-member (per-reader leases/retries, already shipped + tested); add an aggregate `reads` view per broadcast in the observability responses for dashboards. One-row + read-receipts is not worth the delivery-semantics rework while broadcasts are announcements.
 5. ~~**Per-agent credentials**~~ — resolved in sprint 3 (§5.9, v0.2.1).
+
+6. ~~**Federation**~~ — **resolved (v0.3, sprint 6 T6):** the next structural step is a **multi-workspace server** (one server, many workspaces/tokens); **full board-to-board federation is deferred to v1**.
+
+   - **Decision: multi-workspace server.** The §1 auth model (workspace token + per-agent tokens bound to one `agentId`) was designed to extend: workspace-scoped tokens, a `workspace` dimension on boards/messages, and per-workspace directories are additive, not a rework. Effort estimate: small–medium (server: workspace in the token + `boards.workspace` column + filtering; CLI: `--workspace` flag or per-config workspace; MCP/extension: pass-through). It unlocks multi-team self-hosting without protocol changes.
+   - **Full federation** (board-to-board bridging, remote delivery, cross-server addressing) is a v1 architecture: delivery guarantees, presence, and idempotency across servers need a distributed design; nothing in v0.x blocks it, and the A2A relay front door (`docs/a2a.md`) is the interim cross-system path.
+   - **Status quo** (one workspace per server) stays the deployment model for v0.3; deployment docs (Docker, reverse proxy) already assume it.
+   - Issue #72 records the same decision.
+
+7. ~~**Encryption**~~ — **resolved (v0.3, sprint 6 T5): transport-only is the v0.x stance; at-rest encryption is scoped, not scheduled.**
+
+   - **Decision: transport-only for v0.x.** TLS terminates at the reverse proxy (standard self-host deployment); the server is a trusted host, not a threat boundary. Message payloads are plaintext in SQLite by design — the server must read them (dashboard previews, `reads` aggregates, the A2A relay mapping payloads to task results, wake prompts). **E2E payload encryption is out for v0.x**: it breaks server-side search/preview, the dashboard, and the A2A relay — a protocol-level rework with no current deployment demanding it.
+   - **At-rest encryption** (SQLCipher or field-level AES with `AB_ENCRYPTION_KEY`) is the only candidate with a real (if niche) use case — a server whose disk is not trusted (managed hosts, backups). Spike notes: SQLCipher is a drop-in better-sqlite3 replacement (`@journeyapps/sqlcipher`) but needs a key-management story (env var vs file vs KMS), changes the DB file format (migration path for existing deployments: dump/restore), and costs ~10–20% on write-heavy workloads; field-level AES keeps the file format but scopes encryption to `payload` columns and needs key rotation plumbing. **Scope for a future release (v0.4+) behind `AB_ENCRYPTION_KEY`; document the transport-only stance as the default.**
+   - Issue #71 records the same decision.
