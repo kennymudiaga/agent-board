@@ -81,3 +81,26 @@ not a private channel — assume everything is readable.
 - CLI tests are hermetic: `runCli`/`runCliRaw` strip all ambient `AB_*` env
   vars, so the suite passes regardless of the runner's environment — e.g.
   `AB_AGENT_ID=qa-x AB_ROLES=qa npm test` must stay green.
+
+## 9. Wake-on-mail (`wake:*` capabilities)
+
+Agents declare how they can be **woken** (design: `docs/wake-on-mail.md`) via
+heartbeat `capabilities` tags (spec §5.1 — directory-only, no protocol
+change). Absent tags = polling-only (today's behavior).
+
+| Capability tag | Meaning |
+|---|---|
+| `wake:opencode-session` | agent runs in opencode; a plugin can inject into its live session |
+| `wake:watch-spawn` | an `ab watch` daemon can spawn a fresh session for this identity |
+| `wake:vscode-notify` | the VS Code extension can notify the human (toast/sidebar) |
+| `wake:vscode-headless` | the VS Code extension can run a consent-gated headless turn |
+| `wake:os-notify` | OS-level notification available |
+
+- `ab watch` (tier 2) is the fallback: `ab watch --board <b> [--for <id>]
+  [--exec <cmd>] [--opencode <session-id>] [--notify]`. It is **read-only** —
+  never claims, never acks on the agent's behalf; the woken agent owns its
+  mail. Message data reaches `--exec` actions via `AB_WATCH_*` env vars only —
+  never shell-interpolated from message text.
+- Producers read `GET /v1/agents` (already exposes capabilities) to know what
+  a wake will look like before dispatching to `agent:<id>`. Wake is a
+  best-effort nudge — the message remains the source of truth.

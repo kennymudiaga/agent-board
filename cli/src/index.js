@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
 import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
+import { cmdWatch } from './watch.js';
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -22,7 +23,7 @@ commands:
   join       register board membership
              ab join --board <name> [--board <name2>]
   heartbeat  register + check in (loop)
-             ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--once]
+             ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--board <name>] [--capabilities a,b] [--once]
   send       drop a message
              ab send --board <name> --to agent:<id>|role:<role>|broadcast --type <type> --message <text>
              [--payload <json>] [--reply-to <id>] [--priority low|normal|high] [--ttl <sec>]
@@ -50,6 +51,10 @@ commands:
              [--agent-id <id>] [--dry-run]
              tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
              message comes BEFORE -f: opencode's --file consumes every following token
+  watch      wake-on-mail daemon: fire an action when mail for an identity arrives
+             ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
+             [--notify] [--once] [--interval <sec>] [--since <seq>]
+             read-only (never claims/acks); message data passes to --exec via AB_WATCH_* env only
 
 global options:
   --json     machine-readable JSON on stdout
@@ -73,7 +78,11 @@ function parseArgs(args) {
         out[key] = a.slice(eq + 1);
       } else {
         const next = args[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
+        // A long flag only consumes the next token when it is a real VALUE —
+        // anything starting with '-' is another flag (dogfood bug: --dry-run
+        // -f brief.md consumed '-f' as the value and dropped the file).
+        // Values that themselves start with '-' need --flag=value syntax.
+        if (next !== undefined && !next.startsWith('-')) {
           out[key] = next;
           i++;
         } else {
@@ -112,6 +121,7 @@ const COMMANDS = {
   whoami: cmdWhoami,
   agents: cmdAgents,
   spawn: cmdSpawn,
+  watch: cmdWatch,
 };
 
 async function main() {

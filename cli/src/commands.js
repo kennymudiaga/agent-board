@@ -94,6 +94,7 @@ export async function cmdHeartbeat(flags, json) {
     agentId: cfg.agentId,
     provider: cfg.provider ?? undefined,
     roles: cfg.roles,
+    capabilities: flags.capabilities !== undefined ? parseList(flags.capabilities) : undefined,
     boards: flags.board !== undefined ? parseList(flags.board) : cfg.boards,
     status,
     currentTask: flags.task ?? null,

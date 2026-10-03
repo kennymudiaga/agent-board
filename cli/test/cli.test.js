@@ -588,6 +588,23 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('heartbeat --capabilities declares wake:* tags in the directory (#53)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      const hb = await runCli(['heartbeat', '--interval', '15', '--board', 'sprint-7', '--capabilities', 'wake:vscode-notify,wake:vscode-headless', '--once', '--json'], { cwd: dir });
+      expect(hb.code).toBe(0, hb.stderr);
+      const data = JSON.parse(hb.stdout);
+      expect(data.agent.capabilities).toEqual(['wake:vscode-notify', 'wake:vscode-headless']);
+
+      const listed = await runCli(['agents', '--board', 'sprint-7', '--json'], { cwd: dir });
+      const me = JSON.parse(listed.stdout).agents.find((a) => a.agentId === AGENT_ID);
+      expect(me.capabilities).toContain('wake:vscode-notify');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('token --ttl-days sets expiry; --rotate mints a replacement that kills the old token (#55)', async () => {
     const dir = makeWorkspace();
     try {
@@ -739,6 +756,30 @@ describe('ab CLI against the reference server', () => {
       const missingFile = await runCli(['spawn', 'qa', '--board', 'sprint-7', '-f', 'nope.md', '--dry-run'], { cwd: dir });
       expect(missingFile.code).not.toBe(0);
       expect(missingFile.stderr).toContain('brief file not found');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn --dry-run with a short flag AFTER a long flag parses correctly (dogfood: parseArgs value guard)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      writeFileSync(join(dir, 'brief.md'), 'brief body\n');
+
+      // Regression: --dry-run consumed '-f' as its value, so the file was
+      // never parsed and the DEFAULT brief was used (producer dogfood note).
+      const run = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '-f', 'brief.md'], { cwd: dir });
+      expect(run.code).toBe(0, run.stderr);
+      expect(run.stdout).toContain('-f brief.md'); // the file flag survives
+      expect(run.stdout).not.toContain('join the board, pick up a pending request'); // not the default brief
+      expect(run.stdout).toContain('nothing executed'); // dry-run held
+
+      // A long flag whose value is a flag-like token needs --flag=value.
+      const eq = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run', '--brief=-f', '-f', 'brief.md'], { cwd: dir });
+      expect(eq.code).toBe(0, eq.stderr);
+      expect(eq.stdout).toContain('-f brief.md');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

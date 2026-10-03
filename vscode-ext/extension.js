@@ -10,14 +10,23 @@
  * `activate` returns a small API used by the host-wiring UI tests.
  */
 const vscode = require('vscode');
+const os = require('node:os');
+const path = require('node:path');
+const fs = require('node:fs');
 const { fetchBoardState, watchBoard } = require('./src/board.js');
+const { watchMail, mailText } = require('./src/wake.js');
 const { abHeartbeat, abSendNote, findAb } = require('./src/heartbeat.js');
 
 const TOKEN_KEY = 'agentboard.token';
 
-/** @type {{ panel?: vscode.WebviewPanel, watcher?: { close(): void }, timer?: NodeJS.Timeout, tree?: vscode.TreeView<any> }} */
+/** @type {{ panel?: vscode.WebviewPanel, watcher?: { close(): void }, wakeWatcher?: { close(): void }, timer?: NodeJS.Timeout, tree?: vscode.TreeView<any> }} */
 let state = {};
 let treeProvider = null;
+/** Notification seam (overridable by the host-wiring tests). */
+let wakeNotifier = (m, context) =>
+  vscode.window.showInformationMessage(`AgentBoard: ${mailText(m)}`, 'Open board').then((choice) => {
+    if (choice === 'Open board') openBoard(context);
+  });
 
 function cfg() {
   const s = vscode.workspace.getConfiguration('agentboard');
@@ -26,6 +35,8 @@ function cfg() {
     agentId: s.get('agentId', 'vscode-agent'),
     board: s.get('board', 'sprint-8'),
     heartbeatInterval: s.get('heartbeatInterval', 30),
+    wakePollSeconds: s.get('wake.pollSeconds', 10),
+    wakeAutoHandle: s.get('wake.autoHandle', false),
   };
 }
 
@@ -42,6 +53,71 @@ async function setToken(context) {
   if (token === undefined) return;
   await context.secrets.store(TOKEN_KEY, token);
   vscode.window.showInformationMessage('AgentBoard token stored (SecretStorage).');
+  startWakeWatcher(context);
+}
+
+// ---------------------------------------------------------------- wake-on-mail
+
+/** Wake capabilities the heartbeat declares (docs/conventions.md §9). */
+function wakeCapabilities() {
+  const caps = ['wake:vscode-notify'];
+  if (cfg().wakeAutoHandle) caps.push('wake:vscode-headless');
+  return caps;
+}
+
+function startWakeWatcher(context) {
+  if (state.wakeWatcher) return;
+  const c = cfg();
+  getToken(context).then((token) => {
+    if (!token || state.wakeWatcher) return;
+    state.wakeWatcher = watchMail(
+      { server: c.server, board: c.board, token, forId: c.agentId },
+      (m) => {
+        refreshAll(context); // sidebar bump + panel refresh
+        wakeNotifier(m, context);
+        if (cfg().wakeAutoHandle) handleMailHeadless(context, m);
+      },
+      { pollMs: c.wakePollSeconds * 1000 },
+    );
+  });
+}
+
+function stopWakeWatcher() {
+  if (state.wakeWatcher) {
+    state.wakeWatcher.close();
+    state.wakeWatcher = undefined;
+  }
+}
+
+/**
+ * Opt-in headless handling (agentboard.wake.autoHandle): a consent-gated
+ * `vscode.lm` turn answers the board directly; falls back to `opencode run`
+ * in the integrated terminal when no chat model is available/consented
+ * (LanguageModelError). Best-effort — the notification already fired.
+ */
+async function handleMailHeadless(context, m) {
+  const prompt = `${mailText(m)}\n\nHandle this board message as the agent ${cfg().agentId}: if it is a request/question, pick it up with the ab CLI, act on it, reply with a response (--reply-to ${m.id}), and ack. Per docs/conventions.md §5.`;
+  try {
+    const models = await vscode.lm.selectChatModels();
+    if (!models?.length) throw new Error('no chat models available');
+    await models[0].sendRequest(
+      [{ role: 'user', content: prompt }],
+      { justification: `AgentBoard wake: handle ${m.id} from ${m.from}` },
+      new vscode.CancellationTokenSource().token,
+    );
+    return;
+  } catch (e) {
+    // LanguageModelError (no consent/quota) or no models — terminal fallback.
+    try {
+      const brief = path.join(os.tmpdir(), `agentboard-wake-${m.id}.md`);
+      fs.writeFileSync(brief, prompt);
+      const term = vscode.window.createTerminal({ name: 'AgentBoard wake' });
+      term.show();
+      term.sendText(`opencode run --agent board-worker -f "${brief}"`);
+    } catch (err) {
+      vscode.window.showWarningMessage(`AgentBoard: wake auto-handle failed (${e.message ?? err.message}) — mail is in the board.`);
+    }
+  }
 }
 
 function activate(context) {
@@ -67,12 +143,23 @@ function activate(context) {
     vscode.commands.registerCommand('agentboard.refresh', () => refreshAll(context)),
   );
 
+  // Wake-on-mail (sprint 5 T3): while VS Code is open, watch for mail
+  // addressed to the user's agent — notify + sidebar bump, opt-in headless
+  // handling. Runs regardless of panel/tree visibility.
+  startWakeWatcher(context);
+
   // Exposed for the UI tests (and advanced users).
   return {
     setToken: (token) => context.secrets.store(TOKEN_KEY, token),
     getToken: () => getToken(context),
     treeProvider,
     refresh: () => refreshAll(context),
+    _test: {
+      setWakeNotifier: (fn) => {
+        wakeNotifier = fn;
+      },
+      startWake: () => startWakeWatcher(context),
+    },
   };
 }
 
@@ -210,7 +297,7 @@ async function startSession(context) {
   const tick = async () => {
     const token = await getToken(context);
     if (!token || !(state.panel || state.tree?.visible)) return;
-    const res = await abHeartbeat({ server: c.server, token, agentId: c.agentId, board: c.board, interval: c.heartbeatInterval });
+    const res = await abHeartbeat({ server: c.server, token, agentId: c.agentId, board: c.board, interval: c.heartbeatInterval, capabilities: wakeCapabilities() });
     if (!res.ok && state.panel) {
       state.panel.webview.postMessage({ type: 'status', text: `heartbeat: ${res.error}` });
     }
@@ -284,6 +371,7 @@ function webviewHtml() {
 function deactivate() {
   if (state.timer) clearInterval(state.timer);
   if (state.watcher) state.watcher.close();
+  stopWakeWatcher();
 }
 
 module.exports = { activate, deactivate };

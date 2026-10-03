@@ -43,9 +43,10 @@ function runAb(args, env) {
   });
 }
 
-async function abHeartbeat({ server, token, agentId, board, interval }) {
+async function abHeartbeat({ server, token, agentId, board, interval, capabilities }) {
   const args = ['heartbeat', '--interval', String(interval), '--once', '--json'];
   if (board) args.push('--board', board);
+  if (capabilities?.length) args.push('--capabilities', capabilities.join(','));
   return runAb(args, { server, token, agentId });
 }
 

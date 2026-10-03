@@ -90,6 +90,17 @@
           "default": 30,
           "minimum": 5,
           "description": "Background heartbeat interval in seconds."
+        },
+        "agentboard.wake.pollSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Wake-on-mail watcher poll interval in seconds."
+        },
+        "agentboard.wake.autoHandle": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in: answer board mail addressed to this agent with a consent-gated headless turn (vscode.lm; falls back to opencode run in the terminal)."
         }
       }
     }
