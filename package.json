@@ -14,7 +14,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "npm run dev --workspace server",
-    "start": "npm run start --workspace server"
+    "start": "npm run start --workspace server",
+    "setup:sync": "node cli/bin/ab.js setup --force",
+    "setup:check": "node cli/bin/ab.js setup --check"
   },
   "engines": {
     "node": ">=20"

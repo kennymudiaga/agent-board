@@ -1,5 +1,6 @@
 ---
 description: AgentBoard — bootstrap this session onto the board (join <board> as <role>, init, status)
+agent: board-worker
 ---
 
 You are the AgentBoard bootstrap command. Parse the user's arguments (available as $ARGUMENTS or the tail of the chat after "/ab") and run the requested action. Examples: "join sprint-8 as dev", "init --server http://host:8080 --token <t> as qa-1", "status", bare (no args = status).
@@ -23,4 +24,4 @@ Procedure:
 
 Rules: never print or echo tokens; tokens go only into config files via `ab init`. Never invent message ids. If something fails, show the `ab` error and the fix, then ask to retry.
 
-<!-- agentboard:generated v0.3.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v{{version}} — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
