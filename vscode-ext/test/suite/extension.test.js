@@ -82,6 +82,7 @@ suite('AgentBoard extension host wiring', function () {
     await cfg.update('agentId', 'ui-agent', vscode.ConfigurationTarget.Global);
     await cfg.update('board', 'sprint-8', vscode.ConfigurationTarget.Global);
     await cfg.update('heartbeatInterval', 5, vscode.ConfigurationTarget.Global);
+    await cfg.update('wake.pollSeconds', 1, vscode.ConfigurationTarget.Global);
     await ext.exports.setToken(TOKEN);
   });
 
@@ -131,5 +132,39 @@ suite('AgentBoard extension host wiring', function () {
       const items = await provider.getChildren(messages);
       return items.some((i) => (i.description || '').includes('hello from the UI test'));
     }, 'message in the sidebar tree');
+  });
+
+  test('a message for the agent triggers the wake notification + sidebar bump (sprint 5 T3)', async () => {
+    // Notification seam: capture instead of popping a real toast.
+    const notifications = [];
+    ext.exports._test.setWakeNotifier((m) => notifications.push(m));
+    ext.exports._test.startWake();
+    // Let the watcher's priming refresh complete — mail seen during the prime
+    // is treated as pre-existing (by design, no backlog notifications).
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // A request addressed to the user's agent (ui-agent) — not a broadcast.
+    const post = await fetch(`${baseUrl}/v1/boards/sprint-8/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'x-agent-id': 'producer-1' },
+      body: JSON.stringify({ to: 'agent:ui-agent', type: 'request', payload: { text: 'wake me for the review' } }),
+    });
+    assert.strictEqual(post.status, 201);
+
+    await waitFor(() => notifications.some((m) => m.payload.text === 'wake me for the review'), 'wake notification fired');
+    // The message is NOT claimed by the watcher — still pending for a real agent.
+    const view = await fetchJson(`${baseUrl}/v1/boards/sprint-8/messages`);
+    const req = view.messages.find((m) => m.payload.text === 'wake me for the review');
+    assert.strictEqual(req.state, 'pending');
+
+    // Sidebar bump: the message surfaced in the tree via the wake refresh.
+    const provider = ext.exports.treeProvider;
+    await waitFor(async () => {
+      const children = await provider.getChildren(undefined);
+      const messages = children.find((c) => c.label === 'Messages');
+      if (!messages) return false;
+      const items = await provider.getChildren(messages);
+      return items.some((i) => (i.description || '').includes('wake me for the review'));
+    }, 'woken message in the sidebar tree');
   });
 });
