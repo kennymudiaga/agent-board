@@ -27,16 +27,20 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish @agent_board/cli (trusted publishing, provenance)
-        run: npx --yes npm@12 publish --workspace cli --access public --provenance
-      # @agent_board/mcp published since v0.3.0 (sprint 6 T3 decision). Needs
-      # its own trusted-publisher binding on npm (same provider/workflow/
-      # environment as the CLI) — account-owner action, see docs/releasing.md.
+      # @agent_board/mcp publishes FIRST (the risky one — its trusted-publisher
+      # binding must exist, docs/releasing.md): if it fails, the workflow stops
+      # before the CLI publishes, so the release stays atomic.
       - name: Publish @agent_board/mcp (trusted publishing, provenance)
         run: npx --yes npm@12 publish --workspace mcp --access public --provenance
+      - name: Publish @agent_board/cli (trusted publishing, provenance)
+        run: npx --yes npm@12 publish --workspace cli --access public --provenance
 
+  # QA blocker F1 (sprint 6): ghcr + release only run AFTER the npm publish
+  # succeeds — a partial release (image/notes without the packages) is a
+  # broken release.
   ghcr-push:
     runs-on: ubuntu-latest
+    needs: npm-publish
     permissions:
       packages: write
       contents: read
@@ -62,6 +66,7 @@ jobs:
 
   github-release:
     runs-on: ubuntu-latest
+    needs: npm-publish
     steps:
       - uses: actions/checkout@v4
       - name: Create GitHub Release
