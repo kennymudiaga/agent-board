@@ -1,7 +1,17 @@
-# AgentBoard Protocol Spec v0.4.0
+# AgentBoard Protocol Spec v0.4.1
 
-> Status: **frozen for Sprint 8** (reference implementation implements *to* this document).
-> Version: 0.4.0 · Last updated: 2026-10-04
+> Status: **frozen for Sprint 9** (reference implementation implements *to* this document).
+> Version: 0.4.1 · Last updated: 2026-10-04
+>
+> **v0.4.1 (wake + worker ergonomics — no protocol changes):** wake plugin
+> lazy binding + global-config fallback (`resolveConfig` now env → workspace
+> file → machine-wide global config; the watcher re-binds mid-session without
+> an opencode relaunch — issue #101); `ab spawn --visible` (win32 console
+> window) and `--log <file>` (output tee) for worker observability (#93);
+> the long-turn contract recorded in §6.1/§7: claims are **renew-or-lapse**
+> (renewal via `ack claimed` does not increment `attempts`; lapse +
+> redelivery is for crashed workers) and workers on long tasks keep
+> heartbeating (#102). Protocol behavior unchanged from v0.4.0.
 >
 > **v0.4.0 (multi-workspace server):** one server process now hosts **many
 > workspaces** — boards, agents, messages, deliveries, tokens, the SSE stream

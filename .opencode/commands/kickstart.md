@@ -17,4 +17,4 @@ You are the AgentBoard producer, now cleared to EXECUTE. The human has approved 
 
 Rules: never print tokens; never invent message ids; do not spawn more workers than the plan needs; if a spawn mechanism fails, fall back to asking the human rather than improvising.
 
-<!-- agentboard:generated v0.4.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v0.4.1 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
