@@ -313,6 +313,31 @@ describe('message lifecycle', () => {
     expect(after.lease_expires_at).toBeGreaterThan(Date.now() + 299_000);
   });
 
+  it('renewing via ack claimed does NOT increment attempts (long-turn ergonomics, #102)', async () => {
+    const { app } = makeCtx();
+    await heartbeat(app, 'qa-1', { roles: ['qa'] });
+    await api(app, 'POST', '/v1/boards/sprint-7/messages', {
+      agent: 'producer-1',
+      body: { to: 'role:qa', type: 'request', payload: { text: 'long turn' } },
+    });
+    const picked = await (await api(app, 'GET', '/v1/boards/sprint-7/messages', { agent: 'qa-1' })).json();
+    const id = picked.messages[0].id;
+    expect(picked.messages[0].attempts).toBe(1);
+
+    // A multi-minute turn renews repeatedly — attempts must stay 1 (a
+    // renewing worker never approaches the dead-letter threshold).
+    for (let i = 0; i < 2; i++) {
+      const renewed = await api(app, 'POST', `/v1/messages/${id}/ack`, { agent: 'qa-1', body: { status: 'claimed' } });
+      expect(renewed.status).toBe(200);
+      expect((await renewed.json()).message.attempts).toBe(1);
+    }
+
+    // The renewed claim still finalizes normally.
+    const done = await api(app, 'POST', `/v1/messages/${id}/ack`, { agent: 'qa-1', body: { status: 'done' } });
+    expect(done.status).toBe(200);
+    expect((await done.json()).message).toMatchObject({ state: 'done', attempts: 1 });
+  });
+
   it('long-polls: a pickup with wait returns as soon as a message arrives', async () => {
     const { app } = makeCtx();
     await heartbeat(app, 'qa-1', { roles: ['qa'] });
