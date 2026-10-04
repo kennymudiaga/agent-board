@@ -7,8 +7,8 @@
 | Task | State | Evidence |
 |---|---|---|
 | T1 — wake lazy binding + global fallback (#101) | **MERGED + QA PASS** | PR [#103](https://github.com/kennymudiaga/agent-board/pull/103) (merge `e5c317c6`); independent QA: **PASS** (qa-8) — 8/8 points, sign-off `docs/qa/sprint-9-signoff.md`; live fresh-clone verification; 186/186; #101 closed |
-| T2 — spawn observability (#93) | **PR ready** (dev-4) | PR [#104](https://github.com/kennymudiaga/agent-board/pull/104), commit `8ca7502`; suite 190/190 (186 baseline unchanged) incl. 4 new hermetic spawn tests; build clean; live: `--visible` opens a real console window + `--log` captured stdout+stderr, worker stayed detached |
-| T3 — ci.yml tag race (#100) | pending | |
+| T2 — spawn observability (#93) | **MERGED + QA PASS** | PR [#104](https://github.com/kennymudiaga/agent-board/pull/104) (merge `f0e951d5`); independent QA: **PASS** (qa-8) — incl. live win32 shim smoke; 190/190; #93 closed (all items across sprint 8 T5 + this) |
+| T3 — ci.yml tag race (#100) | **dispatched** | request `s9-t3` → `agent:dev-4` |
 | T4 — presence/lease ergonomics (#102) | pending | |
 | T5 — release v0.4.1 | pending | |
 
