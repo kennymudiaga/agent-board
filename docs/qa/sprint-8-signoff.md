@@ -231,3 +231,127 @@
   (unchanged from v0.3, still `UNIQUE`) — correct for isolation (no seq
   collisions across workspaces), though cross-workspace seq gaps are a
   cosmetic quirk only.
+
+## T4 — W4 API/SSE/A2A scoping + isolation tests — SECURITY GATE (PR #96, issue #86)
+
+- **QA:** spawned worker `qa-6` (branch `review/pr-96` = `origin/feat/isolation-86`
+  head `dffa490`, commits `e251926` + `44478ad` + `dffa490`; base `main` `4c64a61`).
+- **Verdict: PASS** — no blocking findings. Security gate clears: no genuine
+  isolation leaks across workspaces; legacy-DB hardening (qa-5 T3 findings a/b)
+  verified; full back-compat preserved (170/170).
+- **Scope reviewed:** `server/src/app.ts` (per-request scoping), `server/src/db.ts`
+  (`tokenAgent`/`workspaceForAgent` + legacy hardening), `server/src/a2a.ts`
+  (relay/card workspace resolution), `server/src/index.ts`, `server/test/isolation.test.ts`
+  (6 new), `server/test/workspace-scoping.test.ts` (3 new hardening tests),
+  `docs/sprint-8/progress.md`.
+
+### Evidence
+
+1. **Per-request scoping (`app.ts`).** Every authenticated route scopes the
+   caller's workspace from the T2 middleware via `c.get('workspaceId')`
+   (grep: boards, messages/pickup/ack/requeue/purge, agents directory,
+   heartbeat, mint/revoke token, SSE). The bare `opts.workspaceId` constant
+   survives at exactly two sites — `store.bootstrapWorkspace(workspaceId, token)`
+   (line 103) and `createA2ARoutes(..., workspaceId)` (line 622, the
+   identity-less card fallback) — matching the acceptance criterion. Middleware:
+   workspace token → `workspaceForToken(bearer)` → `c.set('workspaceId', ws.id)`;
+   agent token → `tokenAgent(bearer)` → `c.set('workspaceId', tokenAgent.workspaceId)`
+   — always the token's OWN row.
+2. **Token-bound resolution (`db.ts`).** `tokenAgent(bearer)` now selects
+   `id, workspace_id, token_expires_at` and returns `{ agentId, workspaceId,
+   expired }`; `workspaceForAgent` reads `agents.workspace_id` (T2 `'default'`
+   stub gone). Probes: two tokens minted for the same `dev-1` in `acme` and
+   `globex` resolve to `acme` / `globex` respectively (never ambiguous);
+   `workspaceForAgent('dev-1')` with rows in both returns one of the real
+   rows' workspaces (row read, not the stub).
+3. **SSE `/v1/events`.** Stream authenticated via `workspaceForToken` (hash
+   lookup; missing/invalid → 401); `hello` gains `"workspace":"<ws>"` (probe:
+   acme stream hello carries `"workspace":"acme"`); `message`/`updated`/`agent`
+   emitters carry the workspace and the stream filters on it. Probe beyond the
+   suite: after an acme `message` event flows, a **globex post to the same
+   board name produces no stream event** (400 ms silence window, single
+   reader) — no cross-workspace feed.
+4. **A2A (`a2a.ts`).** JSON-RPC relay resolves its task space from the caller's
+   agent-token row (`bound.workspaceId`) — a token can never address another
+   workspace's board/threads; suite asserts cross-workspace `tasks/get` →
+   `-32002` TASK_NOT_FOUND both directions. Cards (`/a2a/:agentId` +
+   `/.well-known/agent.json`): `resolveWorkspace` uses token-if-present else
+   the server's configured workspace fallback. Probes: card with acme's
+   `dev-1` token → boards `['team-a']`; with globex's token → `['team-g']`
+   (per-token workspace resolution works); identity-less GET → falls back to
+   `'default'`, returns an **empty card** (agent lives elsewhere). **Assessed
+   against design §4 — non-blocking:** cards are public, identity-less
+   observability (name/description/boards/roles only — no tokens, no message
+   content); an anonymous reader only ever sees the server-own-workspace
+   surface, exactly as a single-workspace deployment does today. No leak.
+5. **Isolation suite + beyond.** The 6 `isolation.test.ts` tests pass:
+   identical board names + identical agent ids in two workspaces — no
+   board/agent/message/directory leaks in either direction; same agent id =
+   distinct identity per token (heartbeat `workspaceId` = own ws; rows are
+   distinct, `SELECT COUNT(*) WHERE id='dev-1'` = 2); token A cannot
+   read/ack/requeue/purge B's mail — cross-workspace 404 on every id route
+   including a same-id agent token from B; role/reader scoping (same role
+   name, other ws never claims); SSE feeds only the authenticated workspace;
+   A2A tasks invisible cross-workspace (`-32002`) with per-workspace board
+   counts. Beyond the suite (11 independent probes, all green): **reverse**
+   direction 404s (acme token on globex mail — ack/requeue/purge 404, same-id
+   acme agent token 404, globex's own token still claims+acks its mail 200);
+   board-route leak (acme `GET /v1/boards/team-b/messages` → 404 unknown
+   board, boards list scoped); fresh-DB same-(agent, idempotency_key) across
+   workspaces both insert, same-ws dedupe intact.
+6. **Legacy hardening (qa-5 findings).** (a) `DROP INDEX IF EXISTS
+   idx_messages_idem` runs in the constructor **before** the workspace-scoped
+   recreate (`WORKSPACE_INDEXES`); on a migrated DB the surviving
+   `idx_messages_idem` SQL is `(workspace_id, from_agent, idempotency_key)`;
+   probe: cross-workspace same-(agent,key) insert succeeds (pre-T4 this was a
+   UNIQUE 500), same-workspace dedupe returns `duplicate`. (b) `rebuildLegacyKeys()`
+   rebuilds `boards`/`agents` onto `PRIMARY KEY (workspace_id, name|id)` when
+   the migrated PK is single-column (PRAGMA-introspected, column defs
+   re-emitted, per-column NOT NULL/DEFAULT preserved); data survives (row
+   count + content + scoped lookups intact). **Transactional rollback
+   (independent injection):** a legacy DB carrying a column whose PRAGMA-echoed
+   type (`varchar(5`, from `"varchar(5"`) makes the rebuild's CREATE TABLE fail
+   **after** BEGIN+RENAME executed — `new Store(path)` throws loudly; a fresh
+   connection then shows `boards` still `PRIMARY KEY (name)` with its row
+   intact and **no `boards_legacy` half-state**; the same-batch pattern
+   reproduced on one connection proves ROLLBACK restores the pre-rebuild table
+   and closes the transaction. Second injection (poison on `agents`): `boards`
+   rebuild COMMITS (composite PK), `agents` rebuild rolls back (legacy PK
+   kept); after removing the poison the DB opens and migrates cleanly.
+   **Fresh DB skipped:** fresh stores show composite PKs, no `_legacy` tables,
+   same board/agent ids across workspaces coexist. **B cannot hijack A's
+   same-id row:** `upsertAgent('acme'/'globex', 'a-1', …)` on a migrated DB
+   keeps both rows' roles/boards distinct; `mintToken` resolves each token to
+   its own workspace.
+7. **Back-compat.** Canonical `npm test` at repo root on `dffa490` →
+   **170/170 (17 files)** = 161 baseline unchanged + 9 new (6 isolation + 3
+   legacy hardening). `npm run build` (`tsc`) clean. `ab setup --check` up to
+   date (11 files). Single-workspace behavior unchanged — every pre-existing
+   suite (incl. cli + mcp against `default`) passes untouched.
+8. **CI green:** `gh pr checks 96` → build-and-test ✅, docker ✅,
+   extension-ui ✅. PR #96 open, base `main`, head `dffa490` = my checkout,
+   MERGEABLE.
+
+### Findings
+
+- **Blocking:** none. **Verdict: PASS** — recommend merge + close #86 after
+  merge (v0.4.0 release gate clears on this task).
+- **Non-blocking (informational):** the A2A identity-less card fallback
+  resolves to the server's own workspace (design §4, documented known
+  limitation in the PR) — verified non-leaking (empty card when the agent
+  lives elsewhere; cards carry no secrets).
+- **Non-blocking (informational):** `workspaceForAgent(agentId)` is a bare-id
+  lookup and is documented as ambiguous when the same id exists in two
+  workspaces — all auth paths (middleware, A2A relay) correctly use
+  `tokenAgent().workspaceId`; no caller uses the ambiguous path for auth.
+- **Non-blocking (robustness):** the table-rebuild preserves per-column
+  NOT NULL/DEFAULT but not table-level constraints (CHECK/UNIQUE) — the
+  shipped v0.3.1 schema has none, so no practical impact; a hand-modified
+  legacy schema could lose such constraints during the one-time rebuild.
+- **Non-blocking (robustness):** when `rebuildLegacyKeys` throws, the
+  `Store` constructor fails loudly (correct — startup aborts) but leaves
+  `this.db` open until GC/process exit (no `finally`-close); cosmetic on the
+  failure path only, unreachable on healthy DBs.
+- **Non-blocking (informational):** the SSE route continues to authenticate
+  workspace tokens only (agent tokens 401) — unchanged T2 semantics, fine for
+  the dashboard surface; agent-token SSE observers are not a requirement.
