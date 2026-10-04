@@ -419,7 +419,7 @@ export class Store {
     };
   }
 
-  private getWorkspace(id: string): WorkspaceRecord | undefined {
+  public getWorkspace(id: string): WorkspaceRecord | undefined {
     const row = this.db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow | undefined;
     return row ? this.toWorkspace(row) : undefined;
   }
@@ -451,6 +451,33 @@ export class Store {
     const hash = createHash('sha256').update(bearer).digest('hex');
     const row = this.db.prepare('SELECT * FROM workspaces WHERE token_hash = ?').get(hash) as WorkspaceRow | undefined;
     return row ? this.toWorkspace(row) : null;
+  }
+
+  /**
+   * Workspace of an agent (sprint 8 T2, #84): the middleware resolves an agent
+   * token's workspace through this point. Until W3 (#85) adds
+   * `agents.workspace_id`, every agent belongs to the default workspace —
+   * single-workspace deployments behave identically.
+   */
+  workspaceForAgent(agentId: string): string {
+    // W3 (#85): read `workspace_id` from the agent row here.
+    void agentId;
+    return 'default';
+  }
+
+  /**
+   * Mint a workspace token (sprint 8 T2, #84, admin): generates a fresh
+   * token, stores its SHA-256 hash, and creates the workspace row. Returns
+   * `null` when the id already exists — tokens are never re-minted for an
+   * existing workspace (revoke + recreate instead); the plaintext token is
+   * shown exactly once.
+   */
+  mintWorkspaceToken(id: string, name: string, now: number): { token: string; workspace: WorkspaceRecord } | null {
+    const token = `abw_${randomBytes(24).toString('hex')}`;
+    const hash = createHash('sha256').update(token).digest('hex');
+    const res = this.createWorkspace({ id, name, tokenHash: hash }, now);
+    if (!res.created) return null;
+    return { token, workspace: res.workspace };
   }
 
   /** Revoke a workspace token (sprint 8 T1, #83): clears the stored hash; the row remains. */
