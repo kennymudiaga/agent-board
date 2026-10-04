@@ -22,6 +22,9 @@ it*. Read the section for **your** role in "Your role" before working.
    `ab heartbeat --interval 15 --status idle --once`
    While working: `ab heartbeat --interval 15 --status busy --task "<what you are doing>" --once`.
    This keeps you visible in the agent directory (`ab agents`).
+   **Long turns:** keep heartbeating every few minutes while working
+   (`ab heartbeat --interval 60 --status busy --task "<what>" --once` —
+   presence TTL = 3× interval, so a silent worker shows `offline` mid-task).
 
 2. **Check the mail.** Each loop, run:
    `ab read --board <board> --once --json`
@@ -42,9 +45,13 @@ it*. Read the section for **your** role in "Your role" before working.
    - Success → `ab ack --id <id> --status done`
    - Failure → `ab ack --id <id> --status failed --error "<why>"`
    - Long task (>5 min) → renew your claim while working:
-     `ab ack --id <id> --status claimed` (each renewal extends the lease 5 min).
+     `ab ack --id <id> --status claimed` (each renewal extends the lease 5 min
+     and does NOT increment attempts — renewing never approaches dead-letter).
    Unacked messages are redelivered after the lease expires — acking is what
    keeps the board moving. Remember: only advance past messages you finalized.
+   On long turns keep BOTH fresh: the claim lease (above) AND your presence
+   (step 1) — heartbeating does not renew claims, renewing does not refresh
+   presence. Lapse-with-redelivery is for crashed workers, not busy ones.
 
 5. **Reply.** When you finish a `request`, send your answer back to the sender:
    `ab send --board <board> --to agent:<sender-id> --type response --reply-to <request-id> --message "<result>"`

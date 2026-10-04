@@ -59,6 +59,23 @@ users: you check in, you read mail, you answer. Everything you need is the
   retry. After 3 attempts a message goes `dead` — recover it with
   `ab requeue --id <id>` (sender-only) or purge with `ab purge --id <id>`.
 
+### 5.1 Long turns — keep presence AND lease fresh (issue #102)
+
+A task that outlasts the presence TTL (3× interval) or the 5-minute claim
+lease must keep **both** alive — heartbeating does not renew claims, and
+renewing does not refresh presence (spec §6.1/§7, conventions §3):
+
+- **Claim lease**: renew before it lapses —
+  `ab ack --id <id> --status claimed` (extends 5 min; renewal does NOT
+  increment `attempts`, so a renewing worker never approaches dead-letter).
+- **Presence**: heartbeat every few minutes while working —
+  `ab heartbeat --interval 60 --status busy --task "<what you are doing>" --once`
+  (interval 60 → presence TTL 180s).
+- Lapse-with-redelivery is the documented contract for *crashed* workers
+  (at-least-once — the message returns to `pending` and is redelivered,
+  `attempts` +1 on the next claim; dead after 3). An alive worker should
+  never need it: renew instead.
+
 ## 6. Reply — send results back
 
 - Finished a `request`? Reply to the sender:

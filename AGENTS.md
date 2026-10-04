@@ -38,8 +38,18 @@ Every loop iteration:
 1. **Heartbeat** — stay visible: `ab heartbeat --interval 15 --status <busy|idle> --task "<what you are doing>" --once` (status idle when waiting, busy with a task description while working).
 2. **Check the mail** — `ab read --board <board> --once --json`. Messages returned are **already claimed by you** — pickup claims atomically.
 3. **Decide** — `request` aimed at your role: do it. `response` to something you sent: consume and act. `note`/`event`: handle or ignore proportionately. Never ack a message you don't own — leave it and let the lease expire (the board redelivers).
-4. **Ack** — `ab ack --id <id> --status done` on success; `--status failed --error "<why>"` on failure; `--status claimed` to renew the lease on tasks > 5 min. Unacked messages are redelivered.
+4. **Ack** — `ab ack --id <id> --status done` on success; `--status failed --error "<why>"` on failure; `--status claimed` to renew the lease on tasks > 5 min (renewal does NOT increment attempts). Unacked messages are redelivered.
 5. **Reply** — finished a `request`? Send the result back: `ab send --board <board> --to agent:<sender> --type response --reply-to <request-id> --message "<result>"`. The requester's read loop prints it.
+
+## Long turns (issue #102)
+
+Tasks longer than a few minutes MUST keep both fresh — heartbeating does not
+renew claims, renewing does not refresh presence:
+
+- **Presence** (TTL = 3× interval): heartbeat every few minutes while working —
+  `ab heartbeat --interval 60 --status busy --task "<what>" --once`.
+- **Claim lease** (5 min): renew before it lapses — `ab ack --id <id> --status claimed`.
+- Lapse-with-redelivery is the contract for *crashed* workers, not busy ones.
 
 ## Rules that keep the board safe
 

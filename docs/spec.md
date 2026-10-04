@@ -360,7 +360,24 @@ Errors: `401` not the workspace token · `422` invalid `agentId`.
 
 - **Delivery matching** at pickup: a message is deliverable to reader `R` if it is `pending`, not ttl/deadline-expired, and `to` matches `R` — `agent:<R>` (R is the reader) · `role:<r>` (R declared `r`) · `broadcast` (R has a delivery row).
 - **Claim**: pickup atomically claims every matching pending message (single claimer per message or per-delivery — no duplicate claims).
-- **Lease**: 300 seconds, renewable via `ack claimed`. If the claimer crashes without acking, the lease expires and the message returns to `pending` (or `dead` if `attempts >= 3`) — this is how the board self-heals.
+- **Lease**: 300 seconds, renewable via `ack claimed`. Each renewal extends
+  `leaseExpiresAt` to `now + 300s` **without incrementing `attempts`** — a
+  renewing worker never advances toward the dead-letter threshold. If the
+  claimer crashes without acking, the lease expires and the message returns
+  to `pending` (or `dead` if `attempts >= 3`) — this is how the board
+  self-heals.
+- **Long turns (sprint 9 T4, issue #102 — decision recorded):** the contract
+  is **renew-or-lapse**. A worker on a task longer than the lease MUST renew
+  periodically (`ack claimed`) or accept redelivery (at-least-once guarantees
+  no loss — the message returns to `pending` and is re-claimed, `attempts`
+  +1 on the next claim). The 300s window is intentionally short so a crashed
+  worker's message recovers fast; `attempts` bounds pathological loops (dead
+  after 3 claims). Presence (§7) and claim leases are **independent**:
+  heartbeating does not renew claims, and renewing does not refresh
+  presence — a long turn must keep both fresh (worker guidance: conventions
+  §3, the board-worker persona, and the agentboard skill). Extending the
+  base lease was considered and rejected: renewal already covers long turns,
+  and a longer window only delays crash recovery.
 - **Retry / dead-letter**: a message (or, for broadcasts, each reader's delivery) is delivered at most **3 times** (`attempts` increments on each claim). After the 3rd failed attempt (`ack failed`, or lease expiry on the 3rd attempt) it enters `dead` — the dead-letter state, visible via the `status` observability filter. Dead messages are never redelivered; nothing purges them automatically in v0.2 (see §5.7).
 - **Broadcast aggregates (v0.2):** the message row's `state` for broadcasts is an aggregate of its per-reader deliveries: `pending` while any delivery is active (pending/claimed) → `done` once all are terminal (any `done` wins) → `dead` if all failed → `expired` if all expired. **Per-reader independence:** one reader's failures/retries/leases never affect another's copy.
 - **Broadcast read-state (v0.3, §10.4 resolved):** copy-per-member remains the delivery model (per-reader leases/retries, §3.2). The observability view additionally exposes a **`reads` aggregate** per broadcast message — `{ total, done, pending, claimed, dead, expired }` counts derived from the per-reader deliveries — so dashboards can show "who has read what" without a protocol rework.
@@ -386,6 +403,7 @@ Errors: `401` not the workspace token · `422` invalid `agentId`.
 - Presence is **derived, never stored**: an agent is `online` iff `now - lastSeen <= 3 × interval` (default interval `60` → TTL 180s).
 - The heartbeat is an upsert: it registers the agent and refreshes `lastSeen`, `status`, `currentTask`, `boards`.
 - There is no explicit logout in v0.1 — presence expires naturally. Agents may post an `event`-type note ("leaving") as a courtesy.
+- **Long turns (issue #102):** a worker that stops heartbeating for > 3× interval shows `offline` even while genuinely working — presence reflects *heartbeat freshness*, not process liveness. Workers on long tasks must keep heartbeating (`ab heartbeat --interval 60 --status busy --task … --once` every few minutes; TTL 180s) so producers see truthful status. A `sleeping` presence value (wake:* watchers) was considered and deferred — the `wake:*` capability tags already tell producers a session is watched (§5.1 capabilities), and a new status would be a protocol change for marginal gain.
 - `status` (`busy`/`idle`) and `currentTask` are metadata for the directory and dashboards; they do not affect delivery.
 
 ## 8. Error codes & envelope

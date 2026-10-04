@@ -31,6 +31,17 @@
   human: "reviewing PR #21", not "doing stuff".
 - Presence expires at 3× interval; a worker that dies disappears from the
   directory without ceremony.
+- **Long turns (issue #102):** a task that outlasts the presence TTL or the
+  5-minute claim lease MUST keep both fresh — heartbeating does not renew
+  claims and renewing does not refresh presence (spec §6.1/§7):
+  - **Presence**: heartbeat every few minutes while working —
+    `ab heartbeat --interval 60 --status busy --task "<what>" --once`
+    (interval 60 → TTL 180s).
+  - **Claim lease**: renew before it lapses —
+    `ab ack --id <id> --status claimed` (extends 5 min, does NOT increment
+    `attempts` — a renewing worker never approaches dead-letter).
+  - Lapse-with-redelivery is the documented contract for *crashed* workers
+    (at-least-once, spec §6.1); an alive worker should never need it.
 
 ## 4. Message etiquette
 
