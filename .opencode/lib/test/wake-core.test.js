@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { serve } from '@hono/node-server';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../../server/src/db.ts';
 import { createApp } from '../../../server/src/app.ts';
@@ -234,10 +234,16 @@ describe('resolveConfig env -> file -> global precedence (sprint 9 T1, #101)', (
   });
 
   it('defaultGlobalConfigPath mirrors the CLI (APPDATA on win32, XDG elsewhere)', () => {
-    const p = defaultGlobalConfigPath({ APPDATA: 'C:\\Users\\t\\AppData\\Roaming' });
-    expect(p).toBe(join('C:\\Users\\t\\AppData\\Roaming', 'agentboard', 'config.json'));
-    const x = defaultGlobalConfigPath({ XDG_CONFIG_HOME: '/home/t/.config' });
-    expect(x).toBe(join('/home/t/.config', 'agentboard', 'config.json'));
+    if (process.platform === 'win32') {
+      const p = defaultGlobalConfigPath({ APPDATA: 'C:\\Users\\t\\AppData\\Roaming' });
+      expect(p).toBe(join('C:\\Users\\t\\AppData\\Roaming', 'agentboard', 'config.json'));
+    } else {
+      const x = defaultGlobalConfigPath({ XDG_CONFIG_HOME: '/home/t/.config' });
+      expect(x).toBe(join('/home/t/.config', 'agentboard', 'config.json'));
+      // Fallback to ~/.config when XDG_CONFIG_HOME is unset.
+      const f = defaultGlobalConfigPath({});
+      expect(f).toBe(join(homedir(), '.config', 'agentboard', 'config.json'));
+    }
   });
 });
 
