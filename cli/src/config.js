@@ -1,7 +1,7 @@
 /**
  * Workspace config for the `ab` CLI. Stored as `.agentboard.json` in the
  * workspace directory (cwd). Env vars override file values:
- *   AB_SERVER, AB_TOKEN, AB_AGENT_ID
+ *   AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_WORKSPACE, AB_BOARDS
  * Resolution order (issue #41): env vars > `.agentboard.json` in cwd >
  * machine-wide global config (`ab init --global`).
  */
@@ -60,6 +60,10 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     throw new CliError(`no ${CONFIG_FILE} in ${cwd} — run \`ab init\` first`);
   }
   const envRoles = process.env.AB_ROLES !== undefined ? parseList(process.env.AB_ROLES) : null;
+  // #93c: AB_BOARDS env override for the config `boards` list — an env-identity
+  // session (e.g. an `ab spawn` worker) can pin its boards without touching
+  // the file. Comma-separated, same grammar as `ab join --board a --board b`.
+  const envBoards = process.env.AB_BOARDS !== undefined ? parseList(process.env.AB_BOARDS) : null;
   const envAny = process.env.AB_SERVER !== undefined || process.env.AB_TOKEN !== undefined || process.env.AB_AGENT_ID !== undefined || process.env.AB_ROLES !== undefined;
   return {
     path,
@@ -84,14 +88,18 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
       agentId: typeof file.agentId === 'string' ? file.agentId : undefined,
       provider: file.provider ?? undefined,
       roles: Array.isArray(file.roles) ? file.roles : undefined,
+      workspace: typeof file.workspace === 'string' ? file.workspace : undefined,
       spawn: file.spawn && typeof file.spawn === 'object' ? file.spawn : undefined,
     },
     server: process.env.AB_SERVER ?? file.server ?? global.server,
     token: process.env.AB_TOKEN ?? file.token ?? global.token,
     agentId: process.env.AB_AGENT_ID ?? file.agentId ?? global.agentId,
+    // Workspace hint (sprint 8 T5, #87): env > file > global. The CLI sends
+    // it only when set; single-workspace servers ignore it.
+    workspace: process.env.AB_WORKSPACE ?? file.workspace ?? global.workspace,
     provider: file.provider ?? global.provider ?? null,
     roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : Array.isArray(global.roles) ? global.roles : []),
-    boards: Array.isArray(file.boards) ? file.boards : Array.isArray(global.boards) ? global.boards : [],
+    boards: envBoards ?? (Array.isArray(file.boards) ? file.boards : Array.isArray(global.boards) ? global.boards : []),
     // #67: an env-identity session (e.g. an `ab spawn` child sharing the
     // spawner's cwd) must NEVER inherit the file's cursors — they are the
     // file identity's per-reader watermarks and can sit far ahead of what a
@@ -124,6 +132,9 @@ export function saveConfig(cfg) {
         ...(cfg.fileValues.agentId !== undefined ? { agentId: cfg.fileValues.agentId } : {}),
         ...(cfg.fileValues.provider !== undefined ? { provider: cfg.fileValues.provider } : {}),
         ...(cfg.fileValues.roles !== undefined ? { roles: cfg.fileValues.roles } : {}),
+        // #87: the workspace hint persists like the other deliberate identity
+        // fields — env/global overrides are session-scoped and never written.
+        ...(cfg.fileValues.workspace !== undefined ? { workspace: cfg.fileValues.workspace } : {}),
         ...(cfg.fileValues.spawn !== undefined ? { spawn: cfg.fileValues.spawn } : {}),
         boards: cfg.boards,
         cursors: cfg.cursors,

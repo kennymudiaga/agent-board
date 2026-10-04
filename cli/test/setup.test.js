@@ -10,7 +10,7 @@ const CLI = resolve(import.meta.dirname, '..', 'bin', 'ab.js');
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
     const childEnv = { ...process.env, ...env };
-    for (const k of ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_BOARD', 'OPENCODE_CONFIG_DIR']) {
+    for (const k of ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_BOARD', 'AB_BOARDS', 'AB_WORKSPACE', 'OPENCODE_CONFIG_DIR']) {
       if (!(k in env)) delete childEnv[k];
     }
     execFile(process.execPath, [CLI, ...args], { cwd, env: childEnv }, (err, stdout, stderr) => {

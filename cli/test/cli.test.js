@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -44,7 +45,7 @@ function gitLog(dir) {
  * the runner's environment (issue #54: an ambient AB_AGENT_ID/AB_ROLES from a
  * spawned-worker session leaked into children and broke the suite).
  */
-const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT'];
+const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT', 'AB_WORKSPACE', 'AB_BOARDS', 'AB_BOARD'];
 
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
@@ -1131,6 +1132,129 @@ describe('ab CLI against the reference server', () => {
       }
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // --- sprint 8 T5 (issue #87): CLI --workspace + mode advertisement ---------
+
+  it('ab init --workspace persists the hint; whoami reports it; AB_WORKSPACE env wins (#87)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir, AGENT_ID, ['--workspace', 'acme']);
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.workspace).toBe('acme');
+
+      const who = await runCli(['whoami', '--json'], { cwd: dir });
+      expect(JSON.parse(who.stdout).workspace).toBe('acme');
+
+      const whoTxt = await runCli(['whoami'], { cwd: dir });
+      expect(whoTxt.stdout).toContain('workspace: acme');
+
+      // AB_WORKSPACE overrides the file value for resolution (session-scoped).
+      const whoEnv = await runCli(['whoami', '--json'], { cwd: dir, env: { AB_WORKSPACE: 'globex' } });
+      expect(JSON.parse(whoEnv.stdout).workspace).toBe('globex');
+      expect(JSON.parse(whoEnv.stdout).env.workspace).toBe(true);
+
+      // A later join/read must NOT persist an env-scoped override into the file.
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir, env: { AB_WORKSPACE: 'globex' } });
+      const after = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(after.workspace).toBe('acme');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the CLI sends the workspace hint only when configured (#87)', async () => {
+    // A dumb capture server: records every request's headers, answers {}.
+    const seen = [];
+    const cap = await new Promise((resolve) => {
+      const srv = createServer((req, res) => {
+        seen.push({ url: req.url, headers: req.headers });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ agents: [] }));
+      });
+      srv.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+    const capUrl = `http://127.0.0.1:${cap.address().port}`;
+    const dir = makeWorkspace();
+    try {
+      // Single-workspace client (no flag/config/env): NO workspace header.
+      await initWorkspace(dir, AGENT_ID, ['--roles', 'dev']);
+      await runCli(['agents', '--json'], { cwd: dir, env: { AB_SERVER: capUrl, AB_TOKEN: 'tok' } });
+      expect(seen.at(-1).headers['x-workspace-id']).toBeUndefined();
+
+      // AB_WORKSPACE env -> header sent.
+      await runCli(['agents', '--json'], { cwd: dir, env: { AB_SERVER: capUrl, AB_TOKEN: 'tok', AB_WORKSPACE: 'acme' } });
+      expect(seen.at(-1).headers['x-workspace-id']).toBe('acme');
+
+      // Config field (ab init --workspace) -> header sent too.
+      await runCli(['init', '--agent-id', AGENT_ID, '--roles', 'dev', '--workspace', 'globex'], { cwd: dir, env: { AB_SERVER: capUrl, AB_TOKEN: 'tok' } });
+      await runCli(['agents', '--json'], { cwd: dir, env: { AB_SERVER: capUrl, AB_TOKEN: 'tok' } });
+      expect(seen.at(-1).headers['x-workspace-id']).toBe('globex');
+    } finally {
+      cap.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AB_BOARDS overrides the config boards list; the file is untouched (#93c)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['join', '--board', 'sprint-7'], { cwd: dir });
+      expect(JSON.parse((await runCli(['whoami', '--json'], { cwd: dir })).stdout).boards).toEqual(['sprint-7']);
+
+      const whoEnv = await runCli(['whoami', '--json'], { cwd: dir, env: { AB_BOARDS: 'alpha,beta' } });
+      expect(JSON.parse(whoEnv.stdout).boards).toEqual(['alpha', 'beta']);
+
+      // The env override is session-scoped: the file still holds its own list.
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg.boards).toEqual(['sprint-7']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('multi-workspace server serves two teams from one process with the CLI (#87)', async () => {
+    const dirA = makeWorkspace();
+    const dirB = makeWorkspace();
+    try {
+      // Team A: a plain single-workspace client (no flag/config/env) — no
+      // behavior change required.
+      await initWorkspace(dirA);
+      await runCli(['join', '--board', 'team-a'], { cwd: dirA });
+      await runCli(['heartbeat', '--interval', '15', '--once'], { cwd: dirA });
+
+      // Admin mints a second workspace on the SAME process (POST /v1/workspaces).
+      const mint = await fetch(`${baseUrl}/v1/workspaces`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'globex', name: 'Globex' }),
+      });
+      expect(mint.status).toBe(201);
+      const { token: wsB } = await mint.json();
+      expect(wsB).toMatch(/^abw_/);
+
+      // Team B drives the CLI with env identity + workspace hint + AB_BOARDS.
+      const envB = { AB_SERVER: baseUrl, AB_TOKEN: wsB, AB_AGENT_ID: 'dev-1', AB_ROLES: 'dev', AB_WORKSPACE: 'globex', AB_BOARDS: 'team-a' };
+      const hbB = await runCli(['heartbeat', '--interval', '15', '--once', '--json'], { cwd: dirB, env: envB });
+      expect(hbB.code).toBe(0, hbB.stderr);
+      expect(JSON.parse(hbB.stdout).workspaceId).toBe('globex'); // middleware resolved the token's workspace
+
+      // Team A posts to team-a; team B's SAME-NAMED board sees nothing.
+      const msgA = JSON.parse((await runCli(['send', '--board', 'team-a', '--to', 'role:dev', '--type', 'request', '--message', 'acme task', '--json'], { cwd: dirA })).stdout);
+      const readB = await runCli(['read', '--board', 'team-a', '--wait', '0', '--once'], { cwd: dirB, env: envB });
+      expect(readB.code).toBe(0, readB.stderr);
+      expect(readB.stdout).not.toContain(msgA.id);
+
+      // Team B posts; team A's board is untouched (no cross-workspace leak).
+      await runCli(['send', '--board', 'team-a', '--to', 'role:dev', '--type', 'request', '--message', 'globex task', '--json'], { cwd: dirB, env: envB });
+      const readA = await runCli(['read', '--board', 'team-a', '--wait', '0', '--once'], { cwd: dirA });
+      expect(readA.code).toBe(0, readA.stderr);
+      expect(readA.stdout).not.toContain('globex task');
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
     }
   });
 });

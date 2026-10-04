@@ -178,3 +178,24 @@ describe('workspace middleware resolution + admin endpoints (sprint 8 T2, issue 
     expect((await app.request(`/v1/events?token=${TOKEN}`)).status).toBe(200);
   });
 });
+
+describe('server-mode advertisement (sprint 8 T5, issue #87)', () => {
+  it('/healthz advertises multiWorkspace: true and stays 200/ok', async () => {
+    const { app } = makeCtx();
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'ok', multiWorkspace: true });
+  });
+
+  it('a minted second workspace is reachable from one process — the advertised mode is real', async () => {
+    const { app } = makeCtx();
+    const ws = await mintWorkspace(app, 'acme');
+    expect(ws.token).toMatch(/^abw_/);
+    const hb = await api(app, 'POST', '/v1/heartbeat', {
+      headers: { authorization: `Bearer ${ws.token}` },
+      body: { agentId: 'dev-1', interval: 15 },
+    });
+    expect(hb.status).toBe(200);
+    expect((await hb.json()).workspaceId).toBe('acme');
+  });
+});
