@@ -6,7 +6,7 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — wake lazy binding + global fallback (#101) | pending | |
+| T1 — wake lazy binding + global fallback (#101) | **dispatched** | request `s9-t1` → `agent:dev-4` (online session) |
 | T2 — spawn observability (#93) | pending | |
 | T3 — ci.yml tag race (#100) | pending | |
 | T4 — presence/lease ergonomics (#102) | pending | |
