@@ -6,8 +6,8 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — wake lazy binding + global fallback (#101) | **PR ready** (dev-4) | PR [#103](https://github.com/kennymudiaga/agent-board/pull/103), commit `1b77c64`; suite 186/186 (176 baseline unchanged) incl. wake-core 14/14 (10 new); build clean; live: fresh-clone inert → real `ab join` mid-session → watcher bound ≤1s → wake prompt injected; configured-at-load regression green |
-| T2 — spawn observability (#93) | pending | |
+| T1 — wake lazy binding + global fallback (#101) | **MERGED + QA PASS** | PR [#103](https://github.com/kennymudiaga/agent-board/pull/103) (merge `e5c317c6`); independent QA: **PASS** (qa-8) — 8/8 points, sign-off `docs/qa/sprint-9-signoff.md`; live fresh-clone verification; 186/186; #101 closed |
+| T2 — spawn observability (#93) | **dispatched** | request `s9-t2` → `agent:dev-4` |
 | T3 — ci.yml tag race (#100) | pending | |
 | T4 — presence/lease ergonomics (#102) | pending | |
 | T5 — release v0.4.1 | pending | |
