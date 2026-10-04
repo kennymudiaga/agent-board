@@ -74,8 +74,8 @@ function originOf(c: Context): string {
 }
 
 /** Agent Card (JSON-LD, A2A v0.3 draft) for one board agent. */
-function cardFor(store: Store, agentId: string, origin: string, now: number) {
-  const agent = store.getAgent(agentId, now);
+function cardFor(store: Store, workspaceId: string, agentId: string, origin: string, now: number) {
+  const agent = store.getAgent(workspaceId, agentId, now);
   const url = `${origin}/a2a/${agentId}`;
   return {
     '@context': A2A_CONTEXT,
@@ -108,8 +108,8 @@ function partsFromPayload(payload: unknown): TaskPart[] {
  * first direct `response` becomes the artifact) · `dead` -> failed (3 failed
  * attempts) · `expired` -> failed (ttl/deadline).
  */
-function taskFromMessage(store: Store, m: MessageRecord, now: number): Task {
-  const replies = store.listReplies(m.id, now);
+function taskFromMessage(store: Store, workspaceId: string, m: MessageRecord, now: number): Task {
+  const replies = store.listReplies(workspaceId, m.id, now);
   const response = replies.find((r) => r.type === 'response') ?? replies[0] ?? null;
   let state: TaskStatus['state'] = 'working';
   let message: string | undefined;
@@ -157,7 +157,7 @@ function parseA2ATo(raw: string): { kind: 'agent' | 'role' | 'broadcast'; value:
   return { kind: m[1] as 'agent' | 'role', value: m[2] };
 }
 
-export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, data?: unknown) => void }) {
+export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, data?: unknown) => void }, workspaceId: string) {
   const app = new Hono();
 
   // Agent Card discovery (public — cards carry no secrets).
@@ -169,14 +169,14 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         400,
       );
     }
-    return c.json(cardFor(store, agentId, originOf(c), Date.now()));
+    return c.json(cardFor(store, workspaceId, agentId, originOf(c), Date.now()));
   });
 
   // The A2A endpoint URL also serves the card (A2A discovery convention).
   app.get('/a2a/:agentId', (c) => {
     const agentId = c.req.param('agentId');
     if (!ID_RE.test(agentId)) return c.json({ error: { code: 'invalid_agent', message: 'invalid agent id' } }, 400);
-    return c.json(cardFor(store, agentId, originOf(c), Date.now()));
+    return c.json(cardFor(store, workspaceId, agentId, originOf(c), Date.now()));
   });
 
   // JSON-RPC 2.0 relay — agent-token auth only (§5.9, no admin escalation).
@@ -221,7 +221,7 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         if (!text) return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'params.message must contain at least one text part'), 200);
 
         const meta = params.metadata && typeof params.metadata === 'object' ? (params.metadata as Record<string, unknown>) : {};
-        const agent = store.getAgent(agentId, now);
+        const agent = store.getAgent(workspaceId, agentId, now);
         const board = typeof meta.board === 'string' && ID_RE.test(meta.board) ? meta.board : agent?.boards?.[0];
         if (!board) {
           return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'no target board: the agent has no boards — pass metadata.board'), 200);
@@ -251,6 +251,7 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         const idempotencyKey = `a2a:${agentId}:${idem ? meta.idempotencyKey : randomUUID()}`;
 
         const result = store.insertMessage(
+          workspaceId,
           {
             board,
             from: agentId,
@@ -270,26 +271,26 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
           return c.json(rpcErr(req.id, -32000, 'duplicate task: this idempotencyKey was already used'), 200);
         }
         mailbox.emit('message', board);
-        return c.json(rpcOk(req.id, taskFromMessage(store, result.message, now)), 200);
+        return c.json(rpcOk(req.id, taskFromMessage(store, workspaceId, result.message, now)), 200);
       }
 
       case 'tasks/get': {
         const id = typeof params.id === 'string' ? params.id : null;
         if (!id) return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'params.id is required'), 200);
-        const m = store.getMessage(id);
+        const m = store.getMessage(workspaceId, id);
         if (!m) return c.json(rpcErr(req.id, RPC_CODES.TASK_NOT_FOUND, 'task not found'), 200);
-        store.listReplies(m.id, now); // sweep for fresh states
-        return c.json(rpcOk(req.id, taskFromMessage(store, store.getMessage(id)!, now)), 200);
+        store.listReplies(workspaceId, m.id, now); // sweep for fresh states
+        return c.json(rpcOk(req.id, taskFromMessage(store, workspaceId, store.getMessage(workspaceId, id)!, now)), 200);
       }
 
       case 'tasks/cancel': {
         const id = typeof params.id === 'string' ? params.id : null;
         if (!id) return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'params.id is required'), 200);
-        const m = store.getMessage(id);
+        const m = store.getMessage(workspaceId, id);
         if (!m) return c.json(rpcErr(req.id, RPC_CODES.TASK_NOT_FOUND, 'task not found'), 200);
         // The relay is the sender, so a still-pending request can be purged.
         if (m.state === 'pending' && m.from === agentId) {
-          store.deleteMessage(m.id, agentId);
+          store.deleteMessage(workspaceId, m.id, agentId);
           return c.json(
             rpcOk(req.id, {
               id: m.id,

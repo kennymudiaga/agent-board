@@ -41,9 +41,10 @@ describe('agentboard-mcp tools (T1)', () => {
     await callTool('heartbeat', { interval: 15, status: 'idle', board: 'sprint-8', roles: '' });
   });
   afterEach(() => {
-    // Clean the board between tests.
+    // Clean the board between tests. Sprint 8 T3 (#85): deleteMessage is
+    // workspace-scoped — the app runs in 'default' (createApp default).
     for (const row of store.db.prepare('SELECT id FROM messages WHERE board = ?').all('sprint-8')) {
-      store.deleteMessage(row.id, 'mcp-agent');
+      store.deleteMessage('default', row.id, 'mcp-agent');
     }
     store.db.prepare('DELETE FROM agents').run();
     store.db.prepare('DELETE FROM boards').run();
