@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * agentboard-wake core (sprint 5 T2, design docs/wake-on-mail.md tier 1).
+ * agentboard-wake core (sprint 5 T2, design docs/wake-on-mail.md tier 1;
+ * sprint 9 T1, issue #101 — lazy binding + global-config fallback).
  *
  * The board-watching half of the opencode wake plugin, factored out so it can
  * be tested hermetically. Mirrors `ab watch` (cli/src/watch.js) semantics:
@@ -34,24 +36,175 @@ export function buildWakePrompt(m) {
   );
 }
 
-/** Resolve board config: env AB_* first, then the workspace .agentboard.json (read-only). */
-export function resolveConfig(directory, env = process.env) {
-  const fromEnv = {
-    server: env.AB_SERVER,
-    token: env.AB_TOKEN,
-    agentId: env.AB_AGENT_ID,
-    board: env.AB_BOARD,
-  };
-  if (fromEnv.server && fromEnv.token && fromEnv.agentId) return fromEnv;
+/**
+ * Machine-wide config path (mirrors cli/src/config.js, issue #41): on win32
+ * `%APPDATA%\agentboard\config.json` (Node convention), elsewhere
+ * `$XDG_CONFIG_HOME/agentboard/config.json` or `~/.config/agentboard/config.json`.
+ * `APPDATA`/`XDG_CONFIG_HOME` are injectable via env for hermetic tests.
+ */
+export function defaultGlobalConfigPath(env = process.env) {
+  const dir =
+    process.platform === 'win32' && env.APPDATA
+      ? join(env.APPDATA, 'agentboard')
+      : join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'agentboard');
+  return join(dir, 'config.json');
+}
 
-  let file = {};
+function readJson(path) {
   try {
-    file = JSON.parse(readFileSync(join(directory, '.agentboard.json'), 'utf8'));
+    return JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    return null; // not configured — the plugin stays inert
+    return null;
   }
-  if (!file.server || !file.token || !file.agentId) return null;
-  return { server: file.server, token: file.token, agentId: file.agentId, board: fromEnv.board ?? file.boards?.[0] };
+}
+
+/**
+ * Resolve board config, mirroring cli/src/config.js precedence:
+ * **env AB_* → workspace `.agentboard.json` → machine-wide global config**
+ * (`ab init --global`, #41 — one setup per machine makes every repo,
+ * fresh clones included, wake-capable at load). Board for the watcher:
+ * `AB_BOARD` ?? the first board from the resolved config. Returns `null`
+ * when no source yields server + token + agentId (plugin stays inert and
+ * lazy-binds later — issue #101).
+ */
+export function resolveConfig(directory, env = process.env, globalConfigPath = defaultGlobalConfigPath(env)) {
+  const file = readJson(join(directory, '.agentboard.json'));
+  const global = readJson(globalConfigPath);
+  const server = env.AB_SERVER ?? file?.server ?? global?.server;
+  const token = env.AB_TOKEN ?? file?.token ?? global?.token;
+  const agentId = env.AB_AGENT_ID ?? file?.agentId ?? global?.agentId;
+  const board = env.AB_BOARD ?? file?.boards?.[0] ?? global?.boards?.[0];
+  if (!server || !token || !agentId) return null;
+  return { server, token, agentId, board };
+}
+
+/**
+ * Lazy re-resolve loop (sprint 9 T1, issue #101): polls `resolve()` and calls
+ * `onChange(cfg)` ONLY when the resolved config's watch-key changes — the
+ * restart-guard (server/token/agentId/board). `null` (inert) → `onChange(null)`;
+ * a key change (config appears, identity switches, board changes) → `onChange(cfg)`
+ * so the caller can (re)start its watcher. Unchanged config never re-fires.
+ * The timer is injectable for hermetic tests (`timer.setInterval`/`clearInterval`).
+ */
+export class LazyResolver {
+  constructor({ resolve, onChange, onLog = () => {}, intervalMs = 5000, timer = null }) {
+    this.resolve = resolve;
+    this.onChange = onChange;
+    this.onLog = onLog;
+    this.intervalMs = intervalMs;
+    this.timer = timer ?? globalThis;
+    this.key = undefined;
+    this._stopped = false;
+    this._handle = null;
+  }
+
+  static keyOf(cfg) {
+    return cfg ? `${cfg.server}|${cfg.token}|${cfg.agentId}|${cfg.board ?? ''}` : null;
+  }
+
+  /** One re-resolve cycle: fires onChange only on a watch-key change. */
+  tick() {
+    if (this._stopped) return;
+    let cfg = null;
+    try {
+      cfg = this.resolve();
+    } catch (e) {
+      this.onLog(`[agentboard-wake] resolve failed: ${e.message}`);
+      return;
+    }
+    const key = LazyResolver.keyOf(cfg);
+    if (key !== this.key) {
+      this.key = key;
+      this.onChange(cfg);
+    }
+  }
+
+  /** Initial resolve + poll loop until stop(). */
+  start() {
+    this.tick();
+    if (!this._stopped) {
+      this._handle = this.timer.setInterval(() => this.tick(), this.intervalMs);
+    }
+    return this;
+  }
+
+  stop() {
+    this._stopped = true;
+    if (this._handle) this.timer.clearInterval(this._handle);
+    this._handle = null;
+  }
+}
+
+/**
+ * Plugin wiring (sprint 9 T1, #101), factored for hermetic tests: owns the
+ * LazyResolver + BoardWatcher lifecycle and the injection into live opencode
+ * sessions. `start()` begins the lazy loop (inert until a config appears);
+ * `stop()` tears everything down. The plugin entry (agentboard-wake.js) is a
+ * thin wrapper over this.
+ */
+export function createWakeController({ client, directory, log = () => {}, intervalMs = 5000, pollMs = 5000 }) {
+  let watcher = null;
+
+  const stopWatcher = () => {
+    if (watcher) {
+      watcher.stop();
+      watcher = null;
+    }
+  };
+  const startWatcher = (cfg) => {
+    watcher = new BoardWatcher({
+      server: cfg.server,
+      token: cfg.token,
+      board: cfg.board,
+      forId: cfg.agentId,
+      pollMs,
+      onLog: log,
+      onMail: async (m) => {
+        const text = buildWakePrompt(m);
+        log(`injecting wake prompt into live sessions (${m.id} ${m.from} -> ${m.to})`);
+        try {
+          const sessions = await client.session.list({ query: { directory } });
+          for (const s of sessions?.data ?? []) {
+            await client.session.promptAsync({
+              path: { id: s.id },
+              body: { parts: [{ type: 'text', text }] },
+            });
+          }
+        } catch (e) {
+          log(`injection failed: ${e.message}`);
+        }
+      },
+    });
+    log(`watching board ${cfg.board} for ${cfg.agentId} (${cfg.server})`);
+    watcher.run().catch((e) => log(`watcher stopped: ${e.message}`));
+  };
+
+  const resolver = new LazyResolver({
+    resolve: () => resolveConfig(directory),
+    onChange: (cfg) => {
+      stopWatcher();
+      if (cfg) {
+        if (!cfg.board) {
+          log('no board configured (set AB_BOARD or join a board) — watcher idle, will re-resolve');
+          return;
+        }
+        startWatcher(cfg);
+      } else {
+        log('no board config (env, .agentboard.json, or global config) — plugin inert, will re-resolve');
+      }
+    },
+    onLog: log,
+    intervalMs,
+  });
+
+  return {
+    resolver,
+    start: () => resolver.start(),
+    stop: () => {
+      resolver.stop();
+      stopWatcher();
+    },
+  };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
