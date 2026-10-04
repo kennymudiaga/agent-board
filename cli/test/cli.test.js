@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Store } from '../../server/src/db.ts';
 import { createApp } from '../../server/src/app.ts';
-import { createSpawnWorktree, installWorktree } from '../src/commands.js';
+import { createSpawnWorktree, installWorktree, spawnWorker } from '../src/commands.js';
 
 const TOKEN = 'cli-test-token';
 const CLI = resolve(import.meta.dirname, '..', 'bin', 'ab.js');
@@ -1255,6 +1255,87 @@ describe('ab CLI against the reference server', () => {
     } finally {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+
+  // --- sprint 9 T2 (issue #93): spawn observability — --visible + --log -----
+
+  it('spawnWorker pins detached + stdio ignore by default (qa-7 finding, #93)', () => {
+    let captured = null;
+    const fakeSpawn = (cmd, args, opts) => {
+      captured = { cmd, args, opts };
+      return { pid: 4242, unref() {} };
+    };
+    spawnWorker(['run', '--agent', 'board-worker', 'brief'], {}, { spawnImpl: fakeSpawn, command: 'opencode' });
+    expect(captured.opts.detached).toBe(true); // EPIPE fix (#93b) stays intact
+    expect(captured.opts.stdio).toBe('ignore');
+    if (process.platform === 'win32') {
+      // The .cmd shim is exec'd through cmd.exe; opencode is in the args.
+      expect(captured.cmd.toLowerCase()).toContain('cmd.exe');
+      expect(captured.args.join(' ')).toContain('opencode');
+      expect(captured.args.join(' ')).toContain('board-worker');
+    } else {
+      expect(captured.cmd).toBe('opencode');
+      expect(captured.args.join(' ')).toContain('board-worker');
+    }
+  });
+
+  it('spawnWorker --log tees child stdout+stderr to the file (append)', async () => {
+    const dir = makeWorkspace();
+    const logFile = join(dir, 'worker.log');
+    // A tiny probe script — avoids cmd.exe quoting hazards with inline args.
+    const probe = join(dir, 'probe.cjs');
+    writeFileSync(probe, 'console.log("tee-out"); console.error("tee-err");\n');
+    try {
+      const child = spawnWorker([probe], {}, { logFile, command: process.execPath });
+      await new Promise((r) => child.on('exit', r));
+      const content = readFileSync(logFile, 'utf8');
+      expect(content).toContain('tee-out');
+      expect(content).toContain('tee-err');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawnWorker --visible opens a new console on win32 / inherits on posix, still detached', () => {
+    let captured = null;
+    const fakeSpawn = (cmd, args, opts) => {
+      captured = { cmd, args, opts };
+      return { pid: 1, unref() {} };
+    };
+    spawnWorker(['run', '--agent', 'a', 'm'], {}, { visible: true, spawnImpl: fakeSpawn, command: 'opencode' });
+    expect(captured.opts.detached).toBe(true);
+    if (process.platform === 'win32') {
+      // New console via `start`; `cmd /k` keeps the window open after exit.
+      const joined = captured.args.join(' ');
+      expect(joined).toContain('start');
+      expect(joined).toContain('/k');
+      expect(joined).toContain('AgentBoard worker');
+    } else {
+      // posix: foreground/inherit — documented mechanism.
+      expect(captured.opts.stdio).toBe('inherit');
+    }
+  });
+
+  it('spawn --visible/--log are plumbed through dry-run + json output (#93)', async () => {
+    const dir = makeWorkspace();
+    const logFile = join(dir, 'worker.log');
+    try {
+      await initWorkspace(dir);
+      const dry = await runCli(['spawn', 'qa', '--board', 'sprint-9', '--dry-run', '--no-worktree', '--visible', '--log', logFile], { cwd: dir });
+      expect(dry.code).toBe(0, dry.stderr);
+      expect(dry.stdout).toContain('visible windows');
+      expect(dry.stdout).toContain(logFile);
+
+      const js = await runCli(['spawn', 'qa', '--board', 'sprint-9', '--dry-run', '--no-worktree', '--visible', '--log', logFile, '--json'], { cwd: dir });
+      expect(JSON.parse(js.stdout)).toMatchObject({ visible: true, log: logFile });
+
+      // Validation: --log pointing at a directory is rejected.
+      const bad = await runCli(['spawn', 'qa', '--board', 'sprint-9', '--dry-run', '--no-worktree', '--log', dir], { cwd: dir });
+      expect(bad.code).not.toBe(0);
+      expect(bad.stderr).toContain('must be a file path');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

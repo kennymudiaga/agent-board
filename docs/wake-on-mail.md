@@ -78,6 +78,24 @@ Later niceties only: per-agent SSE (`for=`-filtered events; §5.6 is
 dashboard-only today) and a `status: sleeping` presence value so producers
 see "watched, will wake" instead of "offline".
 
+### 3.1 Worker observability (`ab spawn`, sprint 9 T2 — issue #93)
+
+Spawned workers run **detached with stdio `ignore`** (EPIPE fix, sprint 8 T5)
+so the spawner's exit can never kill them — which also hides their output.
+Two `ab spawn` flags restore observability without touching the detachment:
+
+- `ab spawn --visible` — win32: the worker runs in **its own console window**
+  (`start` + `cmd /k`, which stays open after the worker exits so crashes
+  stay visible to a human); posix: inherits the spawner's terminal
+  (foreground). A human can watch, intervene, and see crashes as they happen.
+- `ab spawn --log <file>` — tees the worker's stdout+stderr to the file
+  (append), reconstructing crashes post-mortem. Both flags can be combined.
+
+Attachable sessions (tier 2, `ab watch`): `ab watch --opencode` spawns
+`opencode run` on mail arrival, and `opencode serve` + `opencode attach`
+let a human attach to a running headless session — the watch daemon path
+(dogfoods `ab spawn`; see the tier-2 row above).
+
 ## 4. Agents declare wake mechanisms (capabilities)
 
 The heartbeat already carries free-form `capabilities` tags (spec §5.1,
