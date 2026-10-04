@@ -31,9 +31,11 @@ const BOARD_ID_RE = ID_RE;
 export interface AppOptions {
   /** Workspace bearer token. Defaults to AB_TOKEN env, then 'dev-token'. */
   token?: string;
+  /** Initial workspace id (sprint 8 T2, #84). Defaults to AB_WORKSPACE env, then 'default'. */
+  workspaceId?: string;
 }
 
-type Variables = { agentId: string; tokenAgent?: string };
+type Variables = { agentId: string; tokenAgent?: string; workspaceId: string };
 
 function error(c: Context, status: ContentfulStatusCode, code: string, message: string, extra?: Record<string, unknown>) {
   return c.json({ error: { code, message, ...extra } }, status);
@@ -78,12 +80,23 @@ function parseTo(raw: unknown): { kind: 'agent' | 'role' | 'broadcast'; value: s
 
 export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables: Variables }> {
   const token = opts.token ?? process.env.AB_TOKEN ?? 'dev-token';
+  const workspaceId = opts.workspaceId ?? process.env.AB_WORKSPACE ?? 'default';
   const mailbox = new EventEmitter(); // wakes long-pollers on new messages
   const agentMailbox = new EventEmitter(); // notifies dashboards of heartbeats
+
+  // Sprint 8 T1/T2 (#83/#84): the bootstrap workspace row is created
+  // idempotently here so the app's own workspace token always resolves via
+  // the workspaceForToken hash lookup below (single source of truth — an
+  // existing row is never touched). index.ts needs no separate bootstrap.
+  store.bootstrapWorkspace(workspaceId, token, Date.now());
 
   const app = new Hono<{ Variables: Variables }>();
 
   // --- middleware: auth + identity -----------------------------------------
+
+  // Workspace-token (admin) paths: agent tokens must never mint/revoke or
+  // administer workspaces.
+  const ADMIN_PREFIXES = ['/v1/tokens', '/v1/workspaces'];
 
   app.use('/v1/*', async (c, next) => {
     // /v1/events authenticates via query param (SSE cannot set headers) in its own route.
@@ -94,16 +107,35 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     }
     const bearer = auth.slice('Bearer '.length);
 
-    // Token minting/revocation is workspace-token (admin) ONLY — an agent
-    // token must never mint or revoke.
-    if (c.req.path.startsWith('/v1/tokens')) {
-      if (bearer !== token) return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
-      return next();
+    // 1. Workspace token (admin): SHA-256 hash lookup (sprint 8 T2, #84) —
+    //    replaces the plaintext comparison against the configured token. The
+    //    resolved workspace id is set for every request it authenticates.
+    const ws = store.workspaceForToken(bearer);
+    if (ws) {
+      c.set('workspaceId', ws.id);
+      // Admin endpoints accept workspace tokens ONLY (no agent escalation).
+      if (ADMIN_PREFIXES.some((p) => c.req.path.startsWith(p))) return next();
+      // Heartbeat declares its identity in the body.
+      if (c.req.path === '/v1/heartbeat') return next();
+
+      const agentId = c.req.header('X-Agent-ID');
+      if (agentId !== undefined) {
+        if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
+        c.set('agentId', agentId);
+        return next();
+      }
+      // No identity: read-only GETs are open to dashboards (spec §4 — they never
+      // claim or mutate); anything that mutates requires an identity.
+      if (c.req.method === 'GET') return next();
+      return error(c, 401, 'unauthorized', 'missing X-Agent-ID header');
     }
 
-    // Per-agent token (v0.2.1, §5.9; expiry sprint 5 T5): identity is bound to
-    // the token. If an X-Agent-ID is also sent it must match — impersonation
-    // is impossible. An expired token gets its own 401 code.
+    // 2. Per-agent token (v0.2.1, §5.9; expiry sprint 5 T5): identity is bound
+    //    to the token. The agent's workspace resolves via the agent row
+    //    (sprint 8 T2, #84 — 'default' until W3 adds agents.workspace_id). If
+    //    an X-Agent-ID is also sent it must match — impersonation is
+    //    impossible. An expired token gets its own 401 code. Agent tokens
+    //    never pass admin paths.
     const tokenAgent = store.tokenAgent(bearer, Date.now());
     if (tokenAgent) {
       if (tokenAgent.expired) {
@@ -115,25 +147,14 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       }
       c.set('agentId', tokenAgent.agentId);
       c.set('tokenAgent', tokenAgent.agentId);
+      c.set('workspaceId', store.workspaceForAgent(tokenAgent.agentId));
+      if (ADMIN_PREFIXES.some((p) => c.req.path.startsWith(p))) {
+        return error(c, 401, 'unauthorized', 'workspace token required for admin endpoints');
+      }
       return next();
     }
 
-    if (bearer !== token) {
-      return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
-    }
-    // Heartbeat declares its identity in the body.
-    if (c.req.path === '/v1/heartbeat') return next();
-
-    const agentId = c.req.header('X-Agent-ID');
-    if (agentId !== undefined) {
-      if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid X-Agent-ID');
-      c.set('agentId', agentId);
-      return next();
-    }
-    // No identity: read-only GETs are open to dashboards (spec §4 — they never
-    // claim or mutate); anything that mutates requires an identity.
-    if (c.req.method === 'GET') return next();
-    return error(c, 401, 'unauthorized', 'missing X-Agent-ID header');
+    return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
   });
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
@@ -207,6 +228,9 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       {
         agent,
         presence: { ttl, expiresAt: new Date(now + ttl * 1000).toISOString() },
+        // Sprint 8 T2 (#84): the caller's resolved workspace — additive,
+        // observable proof of middleware resolution (consumed in T4+).
+        workspaceId: c.get('workspaceId'),
       },
       200,
     );
@@ -217,7 +241,11 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   app.get('/v1/events', (c) => {
     const q = c.req.query();
     const streamToken = q.token ?? c.req.header('Authorization')?.replace(/^Bearer\s+/, '');
-    if (streamToken !== token) return error(c, 401, 'unauthorized', 'missing or invalid token');
+    // Sprint 8 T2 (#84): workspace tokens authenticate via the SHA-256 hash
+    // lookup (same semantics as before — invalid/missing token -> 401).
+    if (!streamToken || !store.workspaceForToken(streamToken)) {
+      return error(c, 401, 'unauthorized', 'missing or invalid token');
+    }
     const board = q.board ?? null;
     if (board !== null && !ID_RE.test(board)) return error(c, 400, 'bad_request', 'invalid board');
 
@@ -283,6 +311,38 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid agentId');
     store.revokeToken(agentId);
     return c.json({ ok: true, revoked: agentId }, 200);
+  });
+
+  // --- POST/DELETE /v1/workspaces (sprint 8 T2, #84): admin workspace -------
+  // Workspace-token (admin) only — enforced in the middleware. A minted
+  // workspace token is shown once and hashed at rest.
+
+  app.post('/v1/workspaces', async (c) => {
+    const body = await readJsonObject(c);
+    if (!body) return error(c, 400, 'bad_request', 'body must be a JSON object');
+    const id = body.id;
+    if (typeof id !== 'string' || !ID_RE.test(id)) {
+      return error(c, 422, 'unprocessable', 'invalid workspace id');
+    }
+    if (body.name !== undefined && (typeof body.name !== 'string' || body.name.length < 1 || body.name.length > 128)) {
+      return error(c, 422, 'unprocessable', 'name must be a string of 1..128 chars');
+    }
+    const result = store.mintWorkspaceToken(id, (body.name as string | undefined) ?? id, Date.now());
+    if (!result) {
+      return error(c, 409, 'workspace_exists', `workspace already exists: ${id}`);
+    }
+    return c.json(
+      { id: result.workspace.id, token: result.token, note: 'store this token now — it is only shown once' },
+      201,
+    );
+  });
+
+  app.delete('/v1/workspaces/:id', (c) => {
+    const id = c.req.param('id');
+    if (!ID_RE.test(id)) return error(c, 422, 'unprocessable', 'invalid workspace id');
+    if (!store.getWorkspace(id)) return error(c, 404, 'not_found', `unknown workspace: ${id}`);
+    store.revokeWorkspaceToken(id);
+    return c.json({ ok: true, revoked: id }, 200);
   });
 
   // --- GET /v1/boards (v0.2.1, spec §5.8): read-only board directory --------
