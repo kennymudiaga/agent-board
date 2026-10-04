@@ -31,11 +31,13 @@ const BOARD_ID_RE = ID_RE;
 export interface AppOptions {
   /** Workspace bearer token. Defaults to AB_TOKEN env, then 'dev-token'. */
   token?: string;
-/**
-   * Initial workspace id for every store call (sprint 8 T3, #85; T2, #84).
-   * Defaults to AB_WORKSPACE env, then 'default', so single-workspace
-   * deployments behave exactly as before. T2/T4 replace this constant with
-   * per-request resolution (`c.set('workspaceId', …)` from the bearer token).
+  /**
+   * The server's OWN workspace id (sprint 8 T2/T4, #84/#86). Bootstrap for
+   * the initial workspace row (AB_WORKSPACE env, then 'default') and the
+   * FALLBACK for read-only, identity-less surface (public A2A Agent Cards).
+   * Every authenticated route is scoped per-request via the middleware's
+   * `c.get('workspaceId')` — this option is never the store scope for
+   * requests that carry identity.
    */
   workspaceId?: string;
 }
@@ -85,9 +87,11 @@ function parseTo(raw: unknown): { kind: 'agent' | 'role' | 'broadcast'; value: s
 
 export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables: Variables }> {
   const token = opts.token ?? process.env.AB_TOKEN ?? 'dev-token';
-  // Sprint 8 T3 (#85): constant workspace id for every store call until T4
-  // wires per-request resolution (c.get('workspaceId')); T2 (#84) adds the
-  // AB_WORKSPACE env default.
+  // Sprint 8 T4 (#86): routes are scoped per-request via the middleware's
+  // `c.get('workspaceId')` — this constant is now only the server's own
+  // workspace: the bootstrap row below and the identity-less A2A card
+  // fallback. Single-workspace deployments resolve 'default' exactly as
+  // before.
   const workspaceId = opts.workspaceId ?? process.env.AB_WORKSPACE ?? 'default';
   const mailbox = new EventEmitter(); // wakes long-pollers on new messages
   const agentMailbox = new EventEmitter(); // notifies dashboards of heartbeats
@@ -139,11 +143,13 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     }
 
     // 2. Per-agent token (v0.2.1, §5.9; expiry sprint 5 T5): identity is bound
-    //    to the token. The agent's workspace resolves via the agent row
-    //    (sprint 8 T2, #84 — 'default' until W3 adds agents.workspace_id). If
-    //    an X-Agent-ID is also sent it must match — impersonation is
-    //    impossible. An expired token gets its own 401 code. Agent tokens
-    //    never pass admin paths.
+    //    to the token. The agent's workspace resolves from the token's OWN row
+    //    (`agents.workspace_id`, T3 #85) — token hashes are unique per mint, so
+    //    this is never ambiguous even when the same agent id exists in several
+    //    workspaces (T4 #86: agent tokens cannot cross workspaces). If an
+    //    X-Agent-ID is also sent it must match — impersonation is impossible.
+    //    An expired token gets its own 401 code. Agent tokens never pass admin
+    //    paths.
     const tokenAgent = store.tokenAgent(bearer, Date.now());
     if (tokenAgent) {
       if (tokenAgent.expired) {
@@ -155,7 +161,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       }
       c.set('agentId', tokenAgent.agentId);
       c.set('tokenAgent', tokenAgent.agentId);
-      c.set('workspaceId', store.workspaceForAgent(tokenAgent.agentId));
+      c.set('workspaceId', tokenAgent.workspaceId);
       if (ADMIN_PREFIXES.some((p) => c.req.path.startsWith(p))) {
         return error(c, 401, 'unauthorized', 'workspace token required for admin endpoints');
       }
@@ -218,7 +224,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
 
     const now = Date.now();
     const agent = store.upsertAgent(
-      workspaceId,
+      c.get('workspaceId'),
       {
         agentId,
         provider: body.provider as string | undefined,
@@ -232,7 +238,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       now,
     );
     const ttl = interval * 3;
-    agentMailbox.emit('agent', agentId);
+    agentMailbox.emit('agent', agentId, c.get('workspaceId'));
     return c.json(
       {
         agent,
@@ -250,11 +256,16 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   app.get('/v1/events', (c) => {
     const q = c.req.query();
     const streamToken = q.token ?? c.req.header('Authorization')?.replace(/^Bearer\s+/, '');
-    // Sprint 8 T2 (#84): workspace tokens authenticate via the SHA-256 hash
-    // lookup (same semantics as before — invalid/missing token -> 401).
-    if (!streamToken || !store.workspaceForToken(streamToken)) {
+    // Sprint 8 T2/T4 (#84/#86): workspace tokens authenticate via the SHA-256
+    // hash lookup (same semantics as before — invalid/missing token -> 401),
+    // and the stream is scoped to that token's workspace: message/agent events
+    // from any other workspace are filtered at emit time, so a dashboard only
+    // ever sees its own boards/agents.
+    const ws = streamToken ? store.workspaceForToken(streamToken) : null;
+    if (!ws) {
       return error(c, 401, 'unauthorized', 'missing or invalid token');
     }
+    const streamWorkspace = ws.id;
     const board = q.board ?? null;
     if (board !== null && !ID_RE.test(board)) return error(c, 400, 'bad_request', 'invalid board');
 
@@ -263,14 +274,16 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         const send = (event: string, data: unknown) => {
           controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         };
-        send('hello', { ok: true, board });
-        const onMsg = (b: string) => {
-          if (board === null || b === board) send('message', { board: b });
+        send('hello', { ok: true, board, workspace: streamWorkspace });
+        const onMsg = (b: string, wsId: string) => {
+          if (wsId === streamWorkspace && (board === null || b === board)) send('message', { board: b });
         };
-        const onUpdated = (b: string) => {
-          if (board === null || b === board) send('message', { board: b });
+        const onUpdated = (b: string, wsId: string) => {
+          if (wsId === streamWorkspace && (board === null || b === board)) send('message', { board: b });
         };
-        const onAgent = (agentId: string) => send('agent', { agentId });
+        const onAgent = (agentId: string, wsId: string) => {
+          if (wsId === streamWorkspace) send('agent', { agentId });
+        };
         mailbox.on('message', onMsg);
         mailbox.on('updated', onUpdated);
         agentMailbox.on('agent', onAgent);
@@ -311,14 +324,14 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       }
       ttlDays = body.ttlDays as number;
     }
-    const { token, expiresAt } = store.mintToken(workspaceId, agentId, Date.now(), ttlDays ?? undefined);
+    const { token, expiresAt } = store.mintToken(c.get('workspaceId'), agentId, Date.now(), ttlDays ?? undefined);
     return c.json({ agentId, token, expiresAt, note: 'store this token now — it is only shown once' }, 201);
   });
 
   app.delete('/v1/tokens/:agentId', (c) => {
     const agentId = c.req.param('agentId');
     if (!ID_RE.test(agentId)) return error(c, 422, 'unprocessable', 'invalid agentId');
-    store.revokeToken(workspaceId, agentId);
+    store.revokeToken(c.get('workspaceId'), agentId);
     return c.json({ ok: true, revoked: agentId }, 200);
   });
 
@@ -356,7 +369,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
 
   // --- GET /v1/boards (v0.2.1, spec §5.8): read-only board directory --------
 
-  app.get('/v1/boards', (c) => c.json({ boards: store.listBoards(workspaceId) }, 200));
+  app.get('/v1/boards', (c) => c.json({ boards: store.listBoards(c.get('workspaceId')) }, 200));
 
   // --- GET /v1/agents -------------------------------------------------------
 
@@ -377,7 +390,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       }
       filters.status = q.status as AgentStatus;
     }
-    return c.json({ agents: store.listAgents(workspaceId, filters, Date.now()) }, 200);
+    return c.json({ agents: store.listAgents(c.get('workspaceId'), filters, Date.now()) }, 200);
   });
 
   // --- POST /v1/boards/:board/messages --------------------------------------
@@ -436,7 +449,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
 
     const now = Date.now();
     const result = store.insertMessage(
-      workspaceId,
+      c.get('workspaceId'),
       {
         board,
         from: c.get('agentId'),
@@ -457,7 +470,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         originalMessageId: result.duplicate,
       });
     }
-    mailbox.emit('message', board);
+    mailbox.emit('message', board, c.get('workspaceId'));
     return c.json({ message: result.message }, 201);
   });
 
@@ -466,7 +479,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   app.get('/v1/boards/:board/messages', async (c) => {
     const board = c.req.param('board');
     if (!BOARD_ID_RE.test(board)) return error(c, 422, 'unprocessable', 'invalid board name');
-    if (!store.boardExists(workspaceId, board)) return error(c, 404, 'not_found', `unknown board: ${board}`);
+    if (!store.boardExists(c.get('workspaceId'), board)) return error(c, 404, 'not_found', `unknown board: ${board}`);
 
     const q = c.req.query();
     let since = 0;
@@ -502,20 +515,20 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     // No agent identity (dashboard-style read-only): observability view only —
     // never claims, never long-polls. Pickup mode requires an identity.
     if (!callerAgent) {
-      const messages = store.listMessages(workspaceId, board, since, statusFilter, Date.now());
+      const messages = store.listMessages(c.get('workspaceId'), board, since, statusFilter, Date.now());
       return c.json({ messages, cursor: messages.length ? messages[messages.length - 1].seq : since }, 200);
     }
 
     // Observability mode with identity: read-only, no claiming, no long-poll.
     if (statusFilter) {
-      const messages = store.listMessages(workspaceId, board, since, statusFilter, Date.now());
+      const messages = store.listMessages(c.get('workspaceId'), board, since, statusFilter, Date.now());
       return c.json({ messages, cursor: messages.length ? messages[messages.length - 1].seq : since }, 200);
     }
 
     // Pickup mode: claim + long-poll.
     const forId = forAgent ?? callerAgent;
     const now = Date.now();
-    let messages: MessageRecord[] = store.claimMessages(workspaceId, board, forId, since, now);
+    let messages: MessageRecord[] = store.claimMessages(c.get('workspaceId'), board, forId, since, now);
     const deadline = now + wait * 1000;
     while (messages.length === 0 && Date.now() < deadline) {
       await new Promise<void>((resolve) => {
@@ -531,13 +544,13 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
         }
         mailbox.on('message', onMail);
       });
-      messages = store.claimMessages(workspaceId, board, forId, since, Date.now());
+      messages = store.claimMessages(c.get('workspaceId'), board, forId, since, Date.now());
     }
     const cursor = messages.length ? messages[messages.length - 1].seq : since;
     // True watermark (spec §6.2, v0.2): where the client may safely resume.
     // Server-computed so a crashed run's claimed-but-unacked messages still
     // block it (fixes #12 — clients must resume from `watermark`, not `cursor`).
-    const watermark = store.readerWatermark(workspaceId, board, forId, since, Date.now());
+    const watermark = store.readerWatermark(c.get('workspaceId'), board, forId, since, Date.now());
     return c.json({ messages, cursor, watermark }, 200);
   });
 
@@ -565,7 +578,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       return error(c, 422, 'unprocessable', 'error is required when status is failed');
     }
 
-    const result = store.ackMessage(workspaceId, id, c.get('agentId'), status as AckStatus, errMsg, Date.now());
+    const result = store.ackMessage(c.get('workspaceId'), id, c.get('agentId'), status as AckStatus, errMsg, Date.now());
     if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
     if ('conflict' in result) {
       const message =
@@ -574,7 +587,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
           : `message is not in claimed state (cannot ack with ${status})`;
       return error(c, 409, 'ack_conflict', message);
     }
-    mailbox.emit('updated', result.message.board);
+    mailbox.emit('updated', result.message.board, c.get('workspaceId'));
     return c.json({ message: result.message }, 200);
   });
 
@@ -583,24 +596,28 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
   app.post('/v1/messages/:id/requeue', async (c) => {
     const id = c.req.param('id');
     if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
-    const result = store.requeueMessage(workspaceId, id, c.get('agentId'), Date.now());
+    const result = store.requeueMessage(c.get('workspaceId'), id, c.get('agentId'), Date.now());
     if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
     if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can requeue a message');
     if ('wrongState' in result) return error(c, 409, 'state_conflict', 'only dead messages can be requeued');
-    mailbox.emit('updated', result.message.board);
+    mailbox.emit('updated', result.message.board, c.get('workspaceId'));
     return c.json({ message: result.message }, 200);
   });
 
   app.delete('/v1/messages/:id', async (c) => {
     const id = c.req.param('id');
     if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
-    const result = store.deleteMessage(workspaceId, id, c.get('agentId'));
+    const result = store.deleteMessage(c.get('workspaceId'), id, c.get('agentId'));
     if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
     if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can purge a message');
     return c.json({ ok: true, deleted: id }, 200);
   });
 
   // --- A2A relay (sprint 4, docs/a2a.md): Agent Card + JSON-RPC 2.0 --------
+  // Sprint 8 T4 (#86): the relay resolves each request's workspace from the
+  // caller's agent-token row (ids unique per workspace — no URL change);
+  // `workspaceId` (the server's own workspace) is only the identity-less
+  // fallback for the public Agent Card GETs (read-only observability).
 
   app.route('/', createA2ARoutes(store, mailbox, workspaceId));
 

@@ -179,6 +179,15 @@ interface WorkspaceRow {
   created_at: number;
 }
 
+/** PRAGMA table_info row — used to introspect legacy keys for the T4 rebuild. */
+interface TableColumnInfo {
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: unknown;
+  pk: number;
+}
+
 const SCHEMA = `
 -- Multi-workspace server (sprint 8, issues #83/#85): every shared table
 -- carries workspace_id; boards/agents use composite primary keys so board
@@ -364,6 +373,21 @@ export class Store {
     this.ensureColumn('boards', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
     this.ensureColumn('agents', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
     this.ensureColumn('messages', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
+    // Sprint 8 T4 (#86) hardening (qa-5 findings from the T3 sign-off):
+    // 1. Migrated legacy DBs keep single-column primary keys on `boards`
+    //    (name) and `agents` (id). Under per-request workspaces, workspace B
+    //    registering/upserting the same board name or agent id would silently
+    //    hijack workspace A's row (bare ON CONFLICT / INSERT OR IGNORE). Rebuild
+    //    both tables onto their workspace-composite keys when the current key
+    //    is not already workspace-scoped. `messages` keeps `id` as PK — message
+    //    ids are globally unique by construction, no rebuild needed.
+    this.rebuildLegacyKeys();
+    // 2. Migrated legacy DBs keep the OLD global `(from_agent, idempotency_key)`
+    //    unique index under `idx_messages_idem` — a cross-workspace same
+    //    (agent, key) pair would 500 post-T4. Drop it so the workspace-scoped
+    //    recreate in WORKSPACE_INDEXES wins (safe: all legacy rows are in
+    //    'default'; a no-op on fresh DBs where the index does not exist yet).
+    this.db.exec('DROP INDEX IF EXISTS idx_messages_idem');
     this.db.exec(WORKSPACE_INDEXES);
   }
 
@@ -377,6 +401,54 @@ export class Store {
     } catch (e) {
       // "duplicate column name" — already migrated.
       if (!(e instanceof Error && e.message.includes('duplicate column name'))) throw e;
+    }
+  }
+
+  /**
+   * Sprint 8 T4 (#86), qa-5 hardening (b): rebuild `boards` and `agents` onto
+   * workspace-composite primary keys when a migrated legacy database still
+   * keys them by name/id alone. Without this, `upsertAgent`'s bare
+   * `ON CONFLICT DO UPDATE` and the boards `INSERT OR IGNORE` let workspace B
+   * overwrite workspace A's same-named row (roles/boards/status hijacked).
+   *
+   * The rebuild is a schema change at startup (same class as the additive
+   * migration): rename the old table, create the composite-key shape matching
+   * the SCHEMA, copy all rows (explicit column list — order-agnostic), drop
+   * the old table. Column definitions are introspected from the live schema so
+   * the result always matches the migrated state (e.g. `token_expires_at`).
+   * Fresh databases are already composite-keyed — skipped.
+   */
+  private rebuildLegacyKeys(): void {
+    for (const table of ['boards', 'agents'] as const) {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const pkCols = cols.filter((c) => c.pk > 0).map((c) => c.name);
+      if (pkCols.includes('workspace_id')) continue; // already composite-keyed
+      const colList = cols.map((c) => c.name).join(', ');
+      const defs = cols
+        .map((c) => {
+          let d = `"${c.name}" ${c.type || 'TEXT'}`;
+          if (c.notnull) d += ' NOT NULL';
+          if (c.dflt_value !== null && c.dflt_value !== undefined) d += ` DEFAULT ${c.dflt_value}`;
+          return d;
+        })
+        .join(',\n    ');
+      try {
+        this.db.exec(`
+          BEGIN;
+          ALTER TABLE ${table} RENAME TO ${table}_legacy;
+          CREATE TABLE ${table} (
+            ${defs},
+            PRIMARY KEY (workspace_id, ${pkCols.join(', ')})
+          );
+          INSERT INTO ${table} (${colList}) SELECT ${colList} FROM ${table}_legacy;
+          DROP TABLE ${table}_legacy;
+          COMMIT;
+        `);
+      } catch (e) {
+        // A partial rebuild must not leave an open transaction behind.
+        this.db.exec('ROLLBACK');
+        throw e;
+      }
     }
   }
 
@@ -454,15 +526,18 @@ export class Store {
   }
 
   /**
-   * Workspace of an agent (sprint 8 T2, #84): the middleware resolves an agent
-   * token's workspace through this point. Until W3 (#85) adds
-   * `agents.workspace_id`, every agent belongs to the default workspace —
-   * single-workspace deployments behave identically.
+   * Workspace of an agent (sprint 8 T2 #84 / T4 #86): reads `workspace_id`
+   * from the agent row — the T2 `'default'` stub is gone. NOTE for auth paths:
+   * agent ids may repeat across workspaces, so a bare-id lookup is only
+   * unambiguous when the id exists in one workspace. Token-bound resolution
+   * (middleware, A2A relay) MUST use `tokenAgent(...).workspaceId` — the
+   * token's own row is authoritative and never ambiguous.
    */
   workspaceForAgent(agentId: string): string {
-    // W3 (#85): read `workspace_id` from the agent row here.
-    void agentId;
-    return 'default';
+    const row = this.db.prepare('SELECT workspace_id FROM agents WHERE id = ?').get(agentId) as
+      | { workspace_id: string }
+      | undefined;
+    return row?.workspace_id ?? 'default';
   }
 
   /**
@@ -879,17 +954,22 @@ export class Store {
 
   /**
    * Resolve a bearer token: `null` when no agent holds this hash, otherwise
-   * the bound agent and whether its token has expired (sprint 5 T5 — an
-   * expired token is distinguishable from a wrong one, so clients get the
-   * `token_expired` code instead of a generic 401).
+   * the bound agent, its workspace, and whether its token has expired (sprint
+   * 5 T5 — an expired token is distinguishable from a wrong one, so clients
+   * get the `token_expired` code instead of a generic 401).
+   *
+   * The returned `workspaceId` comes from the token's OWN agent row
+   * (`agents.workspace_id`, T3 #85) — token hashes are unique per mint, so
+   * this resolution is never ambiguous even when the same agent id exists in
+   * several workspaces (T4 #86 — the isolation boundary for per-agent tokens).
    */
-  tokenAgent(bearer: string, now: number): { agentId: string; expired: boolean } | null {
+  tokenAgent(bearer: string, now: number): { agentId: string; workspaceId: string; expired: boolean } | null {
     const hash = createHash('sha256').update(bearer).digest('hex');
-    const row = this.db.prepare('SELECT id, token_expires_at FROM agents WHERE token_hash = ?').get(hash) as
-      | { id: string; token_expires_at: number | null }
+    const row = this.db.prepare('SELECT id, workspace_id, token_expires_at FROM agents WHERE token_hash = ?').get(hash) as
+      | { id: string; workspace_id: string; token_expires_at: number | null }
       | undefined;
     if (!row) return null;
-    return { agentId: row.id, expired: row.token_expires_at !== null && row.token_expires_at <= now };
+    return { agentId: row.id, workspaceId: row.workspace_id, expired: row.token_expires_at !== null && row.token_expires_at <= now };
   }
 
   /**

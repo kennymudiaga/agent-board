@@ -14,9 +14,9 @@ if (dbPath !== ':memory:') {
 const store = new Store(dbPath);
 // createApp bootstraps the initial workspace row idempotently (AB_WORKSPACE +
 // AB_TOKEN, token hashed at rest) — single source of truth (sprint 8 T1/T2).
-// Every store call is scoped to that same workspace id (sprint 8 T3, #85):
-// createApp resolves opts.workspaceId ?? AB_WORKSPACE ?? 'default' and threads
-// the constant through all routes until T4 wires per-request resolution.
+// Route scoping is per-request (sprint 8 T4, #86): the middleware resolves
+// the caller's workspace from the bearer (workspace token hash lookup, or the
+// agent token's own row) and every store call uses `c.get('workspaceId')`.
 const app = createApp(store);
 
 serve({ fetch: app.fetch, port }, (info) => {

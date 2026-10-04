@@ -300,3 +300,96 @@ describe('store scoping (sprint 8 T3, issue #85)', () => {
     expect(globexPickup).toHaveLength(0);
   });
 });
+
+describe('legacy-DB hardening (sprint 8 T4, issue #86 — qa-5 findings from the T3 sign-off)', () => {
+  /** Open the same legacy fixture the T3 migration test builds, minus seeding. */
+  function openLegacyStore(): { store: Store; path: string } {
+    const path = tempDbPath();
+    const raw = new Database(path);
+    raw.exec(LEGACY_SCHEMA);
+    raw.close();
+    return { store: new Store(path), path };
+  }
+
+  it('drops the old global idempotency index and rebuilds composite keys on migrated DBs (data intact)', () => {
+    const { store, path } = openLegacyStore();
+    const now = Date.now();
+    store.upsertAgent('default', { agentId: 'a-1', roles: ['dev'], boards: ['b-1'] }, now);
+    store.insertMessage('default', {
+      board: 'b-1', from: 'a-1', toKind: 'agent', toValue: 'a-1', type: 'note',
+      payload: { text: 'x' }, priority: 'normal', ttl: null, deadline: null, idempotencyKey: 'k-1', replyTo: null,
+    }, now);
+
+    // (a) qa-5: migrated DBs kept the OLD global (from_agent, idempotency_key)
+    // index under the same name — the workspace-scoped one must have replaced it.
+    const idem = store.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_idem'")
+      .get() as { sql: string };
+    expect(idem.sql).toContain('workspace_id');
+    expect(idem.sql).toContain('from_agent');
+
+    // (b) qa-5: boards/agents PKs rebuilt to workspace composites (PRAGMA
+    // table_info lists columns in table order, so compare as sets).
+    const pkSet = (cols: TableInfo[]) =>
+      cols
+        .filter((c) => c.pk > 0)
+        .map((c) => c.name)
+        .sort();
+    expect(pkSet(columnsOf(store.db, 'boards') as TableInfo[])).toEqual(['name', 'workspace_id']);
+    expect(pkSet(columnsOf(store.db, 'agents') as TableInfo[])).toEqual(['id', 'workspace_id']);
+
+    // Data survival: the migrated 'default' rows are all there, scoped lookups work.
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM boards').get()).toEqual({ n: 1 });
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM agents').get()).toEqual({ n: 1 });
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM messages').get()).toEqual({ n: 1 });
+    expect(store.listBoards('default')[0].name).toBe('b-1');
+    expect(store.getAgent('default', 'a-1', now)?.agentId).toBe('a-1');
+    store.close();
+    rmSync(join(path, '..'), { recursive: true, force: true });
+  });
+
+  it('cross-workspace same-(agent, idempotencyKey) inserts no longer 500 on a migrated DB (old global index gone)', () => {
+    const { store, path } = openLegacyStore();
+    const now = Date.now();
+    // Seed a 'default' row so the migrated data is realistic.
+    store.insertMessage('default', {
+      board: 'b-1', from: 'dev-1', toKind: 'agent', toValue: 'dev-1', type: 'note',
+      payload: { text: 'default' }, priority: 'normal', ttl: null, deadline: null, idempotencyKey: 'k-1', replyTo: null,
+    }, now);
+    // Pre-T4 this threw UNIQUE constraint failed (messages.from_agent, messages.idempotency_key).
+    const b = store.insertMessage('globex', {
+      board: 'b-1', from: 'dev-1', toKind: 'agent', toValue: 'dev-1', type: 'note',
+      payload: { text: 'globex' }, priority: 'normal', ttl: null, deadline: null, idempotencyKey: 'k-1', replyTo: null,
+    }, now);
+    expect('message' in b).toBe(true);
+    // The SAME workspace still dedupes via the scoped index.
+    const dup = store.insertMessage('default', {
+      board: 'b-1', from: 'dev-1', toKind: 'agent', toValue: 'dev-1', type: 'note',
+      payload: { text: 'dup' }, priority: 'normal', ttl: null, deadline: null, idempotencyKey: 'k-1', replyTo: null,
+    }, now);
+    expect('duplicate' in dup).toBe(true);
+    store.close();
+    rmSync(join(path, '..'), { recursive: true, force: true });
+  });
+
+  it('upsertAgent and mintToken are per-workspace on a migrated DB — B cannot hijack A\'s same-id row', () => {
+    const { store, path } = openLegacyStore();
+    const now = Date.now();
+    store.upsertAgent('acme', { agentId: 'dev-1', roles: ['acme-role'], boards: ['team-a'] }, now);
+    // Pre-T4 this bare ON CONFLICT (id-only PK) overwrote acme's row.
+    store.upsertAgent('globex', { agentId: 'dev-1', roles: ['globex-role'], boards: ['team-b'] }, now);
+
+    expect(store.getAgent('acme', 'dev-1', now)?.roles).toEqual(['acme-role']);
+    expect(store.getAgent('acme', 'dev-1', now)?.boards).toEqual(['team-a']);
+    expect(store.getAgent('globex', 'dev-1', now)?.roles).toEqual(['globex-role']);
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM agents WHERE id = ?').get('dev-1')).toEqual({ n: 2 });
+
+    // mintToken per workspace: tokens resolve to their OWN workspace (isolated identity).
+    const tA = store.mintToken('acme', 'dev-1', now);
+    const tG = store.mintToken('globex', 'dev-1', now);
+    expect(store.tokenAgent(tA.token, now)?.workspaceId).toBe('acme');
+    expect(store.tokenAgent(tG.token, now)?.workspaceId).toBe('globex');
+    store.close();
+    rmSync(join(path, '..'), { recursive: true, force: true });
+  });
+});

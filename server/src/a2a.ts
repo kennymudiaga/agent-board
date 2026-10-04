@@ -157,7 +157,26 @@ function parseA2ATo(raw: string): { kind: 'agent' | 'role' | 'broadcast'; value:
   return { kind: m[1] as 'agent' | 'role', value: m[2] };
 }
 
-export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, data?: unknown) => void }, workspaceId: string) {
+/**
+ * Per-request workspace (sprint 8 T4, #86): the relay endpoint is `:agentId`
+ * with ids unique per workspace, so the workspace resolves from the caller's
+ * OWN agent-token row (`tokenAgent().workspaceId` — never ambiguous, even when
+ * the same agent id exists in several workspaces). Public Agent Card GETs
+ * carry no identity: they use the token when one is present, else the
+ * server's configured workspace (`fallback` — 'default' for single-workspace
+ * deployments, back-compat).
+ */
+function resolveWorkspace(c: Context, store: Store, fallback: string): string {
+  const auth = c.req.header('Authorization');
+  const bearer = auth?.startsWith('Bearer ') ? auth.slice('Bearer '.length) : null;
+  if (bearer) {
+    const bound = store.tokenAgent(bearer, Date.now());
+    if (bound && !bound.expired) return bound.workspaceId;
+  }
+  return fallback;
+}
+
+export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, data?: unknown, workspaceId?: string) => void }, fallbackWorkspaceId: string) {
   const app = new Hono();
 
   // Agent Card discovery (public — cards carry no secrets).
@@ -169,14 +188,14 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         400,
       );
     }
-    return c.json(cardFor(store, workspaceId, agentId, originOf(c), Date.now()));
+    return c.json(cardFor(store, resolveWorkspace(c, store, fallbackWorkspaceId), agentId, originOf(c), Date.now()));
   });
 
   // The A2A endpoint URL also serves the card (A2A discovery convention).
   app.get('/a2a/:agentId', (c) => {
     const agentId = c.req.param('agentId');
     if (!ID_RE.test(agentId)) return c.json({ error: { code: 'invalid_agent', message: 'invalid agent id' } }, 400);
-    return c.json(cardFor(store, workspaceId, agentId, originOf(c), Date.now()));
+    return c.json(cardFor(store, resolveWorkspace(c, store, fallbackWorkspaceId), agentId, originOf(c), Date.now()));
   });
 
   // JSON-RPC 2.0 relay — agent-token auth only (§5.9, no admin escalation).
@@ -193,6 +212,10 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         401,
       );
     }
+    // Sprint 8 T4 (#86): the task space is the caller's workspace — resolved
+    // from the token's own agent row (ids are unique per workspace, no URL
+    // change). A token can never address another workspace's board/threads.
+    const workspaceId = bound.workspaceId;
 
     let body: unknown;
     try {
@@ -270,7 +293,7 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         if ('duplicate' in result) {
           return c.json(rpcErr(req.id, -32000, 'duplicate task: this idempotencyKey was already used'), 200);
         }
-        mailbox.emit('message', board);
+        mailbox.emit('message', board, workspaceId);
         return c.json(rpcOk(req.id, taskFromMessage(store, workspaceId, result.message, now)), 200);
       }
 
