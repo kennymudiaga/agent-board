@@ -355,3 +355,102 @@
 - **Non-blocking (informational):** the SSE route continues to authenticate
   workspace tokens only (agent tokens 401) — unchanged T2 semantics, fine for
   the dashboard surface; agent-token SSE observers are not a requirement.
+
+## T5 — W5 CLI `--workspace` + mode advertisement + deployment docs (PR #98, issue #87; #93 a/b/c)
+
+- **QA:** spawned worker `qa-7` (branch `review/pr-98` =
+  `origin/feat/cli-workspace-87` head `8e36852`; base `main` `9aa8c26`). Note:
+  the ambient `ab` on this machine is the **global 0.3.1 build** — it does not
+  carry `--workspace`. All CLI probes below ran the **PR's own CLI**
+  (`node cli/bin/ab.js`), so they exercise the diff, not the global binary.
+- **Verdict: PASS** — no blocking findings. The `x-workspace-id` header is
+  advisory-only and is **not a leak** (design intent, confirmed below).
+- **Scope reviewed:** `cli/src/api.js` (header), `cli/src/config.js`
+  (workspace/boards resolution + persistence), `cli/src/index.js` (usage),
+  `cli/src/commands.js` (`init --workspace`, `whoami`, `spawnWorker` +
+  `AB_BOARD`), `cli/test/cli.test.js` + `setup.test.js`, `server/src/app.ts`
+  (`/healthz`), `server/test/workspaces-admin.test.ts` (+2), `server/Dockerfile`
+  (healthcheck), `docs/multi-workspace.md` §8, `docs/sprint-8/progress.md`.
+
+### Evidence
+
+1. **Suite (repo root, PR head `8e36852`):** `npm test` → **176/176 (17
+   files)** = 170 baseline unchanged + 6 new (4 CLI: init persists + whoami +
+   env-wins, header only-when-set via capture server, AB_BOARDS override,
+   two-teams-one-process E2E; 2 server: healthz advertisement + minted-second-
+   workspace reachable). `npm run build` (`tsc`) clean; `ab setup --check` up
+   to date (11 files). CI green: `gh pr checks 98` → build-and-test ✅, docker
+   ✅, extension-ui ✅; PR `{state: OPEN, mergeable: MERGEABLE, head: 8e36852}`.
+2. **CLI probes (worktree-scoped `scratch/`, PR CLI, ambient AB_* scrubbed):**
+   `ab init --workspace acme` → `.agentboard.json` gains `"workspace": "acme"`
+   (persisted) and `whoami` reports `workspace: acme` (JSON + text).
+   `AB_WORKSPACE=globex` env → `whoami` reports `globex` with
+   `env.workspace=true` and the **file stays `acme`** (env/global overrides are
+   session-scoped, never written — verified in `config.js` `fileValues`
+   persistence + probe). `ab init --global --workspace globex` (sandboxed
+   `APPDATA`) → global `config.json` gains `"workspace": "globex"` (§8.3 claim
+   holds for machine-wide config). `AB_BOARDS=alpha,beta` env → `whoami`
+   reports `boards: [alpha,beta]` with `env.boards=true`; file boards list
+   untouched (also covered by the suite's `AB_BOARDS overrides… (#93c)` test).
+3. **Header only-when-set:** the capture-server test (`cli/test/cli.test.js`
+   "the CLI sends the workspace hint only when configured (#87)") proves three
+   states against a recording HTTP server: no flag/config/env → **no**
+   `x-workspace-id` header; `AB_WORKSPACE` env → header present; config field
+   (`init --workspace`) → header present. `cli/src/api.js` sends the header
+   only under `if (cfg.workspace)`.
+4. **Advisory-header assessment (acceptance item 6):** `x-workspace-id` is
+   **purely advisory** — grep of `server/src` finds **zero** references to
+   `x-workspace-id`; the server authorizes solely by the bearer token
+   (`workspaceForToken` SHA-256 lookup, T2 middleware). The header discloses
+   nothing the token doesn't already bind (the caller's workspace), carries no
+   secret, and is ignored by the server entirely. Matching docs §8.3 ("the hint
+   is advisory — e.g. to cross-check or for observability"). **Not a leak —
+   design intent confirmed.**
+5. **Mode advertisement:** `/healthz` → `{status:"ok", multiWorkspace:true}`
+   (server test asserts 200 + `toMatchObject`). Docker healthcheck
+   (`server/Dockerfile`) only evaluates `r.ok`
+   (`fetch(...).then(r=>process.exit(r.ok?0:1))`) — the extra field is
+   invisible to it. Live-localhost note: the ambient dev server on :8080 runs a
+   pre-T5 binary (`{"status":"ok"}` only) — not evidence against the PR; the
+   hermetic server test above is the authoritative check.
+6. **#93 items:** (a) `cmdSpawn` child env gains `AB_BOARD` (commands.js);
+   wake-plugin binding needs no join round-trip. (b) `spawnWorker` spawns
+   **detached + `stdio:'ignore'`** on **both** win32 (`cmd.exe /d /s /c`) and
+   POSIX (plain `opencode` exec) — a clean `ab spawn` exit can no longer kill
+   the worker via EPIPE (the shared `/d /s /c` quoting is preserved). (c)
+   `AB_BOARDS` env override — evidence in (2).
+7. **Docs §8 cross-check** (`docs/multi-workspace.md` §8 vs `server/src/app.ts`
+   + `db.ts` + `cli/src/commands.js`): §8.1 server (one process, `AB_WORKSPACE`
+   default `'default'`, healthz) — accurate. §8.2 minting: `POST
+   /v1/workspaces` → 201 `{id, token: abw_…, note}` with `abw_` + 48 hex
+   (`db.ts mintWorkspaceToken`: 24 random bytes → 48 hex), token shown once +
+   SHA-256 at rest, duplicate → 409; `DELETE /v1/workspaces/:id` revokes
+   (clears hash, row + data remain); admin endpoints accept workspace tokens
+   only; per-agent tokens are `abt_…` (db.ts) — all accurate. §8.3 per-team
+   CLI: `ab init --workspace` / `--global --workspace`, hint optional + sent
+   only when set, env-only identity example (`AB_WORKSPACE`, `AB_BOARDS`) —
+   accurate (probes (2)). §8.4 security note — **one inaccuracy**, below.
+
+### Findings
+
+- **Blocking:** none. **Verdict: PASS** — recommend merge + close #87 (release
+  gate T6 v0.4.0 is the only remaining gate).
+- **Non-blocking (docs accuracy, §8.4):** "rotate by re-minting (`POST` again
+  atomically replaces the stored hash)" is **inaccurate**. The code never
+  re-mints: `POST /v1/workspaces` on an existing id → 409 `workspace_exists`
+  (`mintWorkspaceToken` returns `null` when the row exists; `createWorkspace`
+  is `INSERT OR IGNORE` — an existing row's hash is never clobbered), and
+  `DELETE` revokes **without removing the row**, so revoke-then-re-POST also
+  409s. A lost workspace token cannot be re-issued for the same id through the
+  API — minting a *new* workspace id (or a DB-level intervention) is the only
+  rotation path. The *behavior* is the secure default (tokens shown exactly
+  once, never replaced), so this is a **docs fix**, not a code fix: suggest
+  rewording §8.4 to "a minted workspace token is shown exactly once and is
+  never re-issued for the same id — POST on an existing id is rejected (409);
+  rotate by minting a new workspace id (e.g. `acme-2`) or by DB-level
+  intervention after revoke."
+- **Non-blocking (test coverage, #93b):** `spawnWorker`'s `detached +
+  stdio:'ignore'` fix is verified by code review only — no hermetic unit test
+  pins the spawn options (the suite's spawn tests cover dry-run/validation/
+  worktree). Low risk (two-line option change on a non-hot path), but a small
+  unit test asserting the resolved spawn opts would lock the EPIPE fix in.
