@@ -11,7 +11,7 @@
 | T3 — W3 store scoping + migration (#85) | **MERGED + QA PASS** | PR [#95](https://github.com/kennymudiaga/agent-board/pull/95) (merge `26228432`; rebase `8325d91` + sign-off `239556f` folded in); independent QA: **PASS** (qa-5, `33c85d8`) — 30/30 migration/index checks, all 19 public store methods scoped; suite **161/161**; #85 closed. T4-bound findings recorded |
 | T4 — W4 API/SSE/A2A scoping + isolation tests (#86) | **MERGED + QA PASS (security gate)** | PR [#96](https://github.com/kennymudiaga/agent-board/pull/96) (merge `55a26da9`); independent QA: **PASS** (qa-6, sign-off `8d6f34f` via PR [#97](https://github.com/kennymudiaga/agent-board/pull/97) merged `6c63624a`) — isolation suite 6/6 + 11 beyond-suite probes, PK-rebuild rollback injection tests, fresh-DB no-op; suite **170/170**; #86 closed |
 | T5 — W5 CLI `--workspace` + docs (#87) | **MERGED + QA PASS** | PR [#98](https://github.com/kennymudiaga/agent-board/pull/98) (merge `cda4c309`); independent QA: **PASS** (qa-7, sign-off `712b9bb` on `review/pr-98`) — 176/176, probes green, advisory-header assessed non-leaking; docs §8.4 rotation caveat fixed on main (`255d20d`); #87 closed. #93 items a/b/c landed |
-| T6 — release v0.4.0 (#90) | **pending — awaiting human approval for publish** | after T1–T5 (all merged + QA PASS ×5) |
+| T6 — release v0.4.0 (#90) | **SHIPPED** | PR [#99](https://github.com/kennymudiaga/agent-board/pull/99) (merge `b8587ea`) + tag `v0.4.0`; Release run SUCCESS (cli+mcp npm with SLSA provenance, GHCR `v0.4.0`+`latest`, GitHub Release 17:12:53Z); clean-machine + producer verification; #90 closed. Follow-up #100 (ci.yml tag docker-push race) |
 
 ## Verification record
 
