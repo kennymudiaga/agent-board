@@ -125,4 +125,4 @@ every thread self-contained enough for a fresh session to continue it.
 - Never invent message ids; take them from `ab` output.
 - Full manual: the `agentboard` skill. Conventions: `docs/conventions.md`.
 
-<!-- agentboard:generated v0.3.1 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
+<!-- agentboard:generated v0.4.0 — edit cli/templates/ in the agent-board repo, then run `ab setup --force` -->
