@@ -50,7 +50,11 @@ commands:
              ab agents [--board <name>] [--role <role>] [--status idle|busy] [--json]
   spawn      spawn transient workers for a role (tiered: opencode | vs-code fallback)
              ab spawn <role> [--board <name>] [--count <n>] [--brief <text>|-f <file>]
-             [--agent-id <id>] [--worktree|--no-worktree] [--dry-run]
+             [--agent-id <id>] [--worktree|--no-worktree] [--visible] [--log <file>] [--dry-run]
+             --visible: run the worker in a visible terminal window (win32: new console;
+                        posix: inherit the current terminal) — watch, intervene, see crashes
+             --log <file>: tee the worker's stdout+stderr to the file (append) for
+                        post-mortem on crashes (worker stays detached; observability restored)
              tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
              message comes BEFORE -f: opencode's --file consumes every following token
              worktree: default ON for dev/qa — fresh branch + temp worktree + npm ci (one writer per checkout)

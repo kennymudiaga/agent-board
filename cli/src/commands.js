@@ -3,7 +3,7 @@
  * Every command accepts `json` (--json) for machine-readable stdout.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
@@ -594,19 +594,80 @@ function cmdQuote(s) {
  * the args ourselves (shell:true merely concatenates, which is the bug the
  * live test caught). POSIX: plain exec of the `opencode` binary.
  *
- * #93b (win32 EPIPE hazard): the worker is spawned DETACHED with stdio
- * 'ignore' so a clean exit of `ab spawn` cannot kill it — with 'inherit',
- * closing the spawner's stdout/stderr pipes (EPIPE) tears the worker down the
- * moment the parent exits. The worker heartbeats on its own; its output is
- * its board replies, not this console.
+ * #93b (win32 EPIPE hazard): the worker is spawned DETACHED so a clean exit
+ * of `ab spawn` cannot kill it — with 'inherit', closing the spawner's
+ * stdout/stderr pipes (EPIPE) tears the worker down the moment the parent
+ * exits. The worker heartbeats on its own; its output is its board replies,
+ * not this console.
+ *
+ * Observability (issue #93, sprint 9 T2) — stdio depends on the flags:
+ *   - default: 'ignore' (detached, fire-and-forget; the EPIPE fix)
+ *   - --log <file>: stdout+stderr tee'd to the file (append) so crashes are
+ *     reconstructible post-mortem
+ *   - --visible: win32 opens a REAL console window (`start` + `cmd /k` — it
+ *     stays open after opencode exits, so crashes stay visible to a human);
+ *     posix inherits the spawner's terminal (foreground; still detached).
+ * `command`/`spawnImpl` are injectable for hermetic tests.
  */
-function spawnWorker(args, env) {
-  const opts = { env, stdio: 'ignore', detached: true };
+export function spawnWorker(args, env, { visible = false, logFile = null, command = 'opencode', spawnImpl = spawn } = {}) {
   if (process.platform === 'win32') {
-    const cmdline = ['opencode', ...args.map(cmdQuote)].join(' ');
-    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmdline], opts);
+    // `opencode` is a .cmd shim — CreateProcess cannot exec it directly, so it
+    // goes through cmd.exe. A REAL executable (e.g. an injected node.exe in
+    // tests) is spawned directly — no cmd wrapper, no quoting dance, and the
+    // fd tee works (posix-style).
+    const isShim = /\.(cmd|bat)$/i.test(command) || command === 'opencode';
+    if (!isShim) {
+      const logFd = logFile !== null ? openSync(logFile, 'a') : null;
+      const child = spawnImpl(command, args, {
+        env,
+        detached: true,
+        stdio: logFile !== null ? ['ignore', logFd, logFd] : visible ? 'inherit' : 'ignore',
+      });
+      if (logFd !== null) closeSync(logFd);
+      return child;
+    }
+    // cmdQuote the command too — a shim path with spaces (e.g. an npm-global
+    // install dir) must survive cmd.exe's argv splitting like every other
+    // token. When the first token is quoted, wrap the WHOLE line (command AND
+    // redirect) in an extra pair: `cmd /s` strips the outermost quotes,
+    // leaving the inner ones intact (the classic cmd.exe /c quoting dance) —
+    // the closing pair must sit AFTER the redirect so the strip can't eat
+    // the redirect's own quotes. windowsVerbatimArguments stops Node from
+    // re-quoting the line (its `\"` escaping is not cmd-compatible).
+    const inner = [cmdQuote(command), ...args.map(cmdQuote)].join(' ');
+    // win32 --log uses SHELL redirection, not an inherited fd: cmd.exe
+    // reconnects its own children to the console, so a stdio fd does not
+    // survive to the grandchild (node/opencode) — the redirect captures it.
+    const redirect = logFile !== null ? ` > "${logFile}" 2>&1` : '';
+    const line = /[\s"&|<>^%]/.test(command) ? `"${inner}${redirect}"` : `${inner}${redirect}`;
+    if (visible) {
+      // New console window via `start`; the inner `cmd /k` keeps the window
+      // open after the worker exits (crashes stay visible). The window has
+      // its own console, so the outer process stays stdio 'ignore'.
+      return spawnImpl(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/s', '/c', 'start', '"AgentBoard worker"', `cmd /k "${line}"`],
+        { env, detached: true, stdio: 'ignore', windowsVerbatimArguments: true },
+      );
+    }
+    return spawnImpl(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], {
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsVerbatimArguments: true,
+    });
   }
-  return spawn('opencode', args, opts);
+  // posix: fd tee works (no intermediate shell); --visible inherits the
+  // spawner's terminal (foreground, still detached). --log wins over
+  // --visible when both are set (the file is the crash record).
+  const logFd = logFile !== null ? openSync(logFile, 'a') : null;
+  const child = spawnImpl(command, args, {
+    env,
+    detached: true,
+    stdio: logFile !== null ? ['ignore', logFd, logFd] : visible ? 'inherit' : 'ignore',
+  });
+  if (logFd !== null) closeSync(logFd);
+  return child;
 }
 
 /** Synchronous `opencode` invocation (pre-flight). Same .cmd-shim handling. */
@@ -685,6 +746,14 @@ export async function cmdSpawn(flags, json) {
 
   const count = flags.count === undefined ? 1 : Number(flags.count);
   if (!Number.isInteger(count) || count < 1 || count > 20) usage('--count must be an integer in 1..20');
+
+  // Observability (issue #93, sprint 9 T2): --visible opens a terminal window
+  // a human can watch; --log <file> tees worker stdout+stderr for post-mortem.
+  const visible = flags.visible === true;
+  const logFile = flags.log !== undefined ? String(flags.log) : null;
+  if (logFile !== null && existsSync(logFile) && statSync(logFile).isDirectory()) {
+    usage(`--log must be a file path, not a directory: ${logFile}`);
+  }
 
   // OpenCode's `--file` is a yargs *array* option — it consumes every token
   // after it, so the message must come BEFORE `-f` (demo finding, issue #42).
@@ -777,7 +846,7 @@ export async function cmdSpawn(flags, json) {
       // agentboard-wake plugin bindable without a join round-trip.
       AB_BOARD: board,
     };
-    const child = spawnWorker(args, childEnv);
+    const child = spawnWorker(args, childEnv, { visible, logFile });
     child.on('error', (err) => {
       process.stderr.write(`error: failed to spawn worker ${agentId}: ${err.message}\n`);
     });
@@ -786,10 +855,12 @@ export async function cmdSpawn(flags, json) {
   }
 
   if (json) {
-    console.log(JSON.stringify({ tier, dryRun: Boolean(flags.dryRun), role, board, model, agent, worktree: useWorktree, spawned, commands }));
+    console.log(JSON.stringify({ tier, dryRun: Boolean(flags.dryRun), role, board, model, agent, worktree: useWorktree, visible, log: logFile, spawned, commands }));
   } else if (flags.dryRun) {
     for (const c of commands) console.log(c);
-    console.log(`spawn dry run: ${count} worker(s) for role:${role} on ${board} — nothing executed${useWorktree ? ' (worktrees planned)' : ''}`);
+    console.log(
+      `spawn dry run: ${count} worker(s) for role:${role} on ${board} — nothing executed${useWorktree ? ' (worktrees planned)' : ''}${visible ? ' (visible windows)' : ''}${logFile !== null ? ` (log: ${logFile})` : ''}`,
+    );
   } else {
     for (const s of spawned) {
       console.log(`spawned ${s.agentId} (opencode pid=${s.pid}) on ${board} as role:${role}`);
@@ -798,5 +869,7 @@ export async function cmdSpawn(flags, json) {
         console.log(`  cleanup:  git worktree remove "${s.worktree}"   # after the worker exits; prune leftovers with \`git worktree prune\``);
       }
     }
+    if (visible) console.log('  visible: the worker runs in its own terminal window (watch it, intervene, see crashes)');
+    if (logFile !== null) console.log(`  log: ${logFile} (worker stdout+stderr appended here)`);
   }
 }
