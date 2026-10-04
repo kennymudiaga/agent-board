@@ -32,7 +32,7 @@ export async function cmdInit(flags, json) {
   if (!server || !token) {
     usage(
       'init requires --server and --token (or AB_SERVER / AB_TOKEN env vars)',
-      'ab init --server http://localhost:8080 --token <workspace-token> [--agent-id qa-1] [--roles qa,dev] [--provider opencode]\n  ab init --global --server <url> --token <t> [--agent-id qa-1] [--roles qa,dev]   machine-wide config (no per-repo re-entry)',
+      'ab init --server http://localhost:8080 --token <workspace-token> [--agent-id qa-1] [--roles qa,dev] [--provider opencode] [--workspace <id>]\n  ab init --global --server <url> --token <t> [--agent-id qa-1] [--roles qa,dev] [--workspace <id>]   machine-wide config (no per-repo re-entry)',
     );
   }
   // --global writes the machine-wide config (issue #41); the local file is
@@ -49,18 +49,22 @@ export async function cmdInit(flags, json) {
     agentId: flags.agentId ?? existing.agentId ?? globalCfg.agentId,
     provider: flags.provider ?? existing.provider ?? globalCfg.provider ?? null,
     roles: flags.roles !== undefined ? parseList(flags.roles) : existing.roles ?? globalCfg.roles ?? [],
+    // #87: optional workspace hint — persisted for every subsequent request;
+    // omitted entirely for single-workspace setups.
+    workspace: flags.workspace ?? existing.workspace ?? globalCfg.workspace ?? null,
     boards: existing.boards ?? [],
     cursors: existing.cursors ?? {},
   };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
   if (json) {
-    console.log(JSON.stringify({ ok: true, path, global: Boolean(flags.global), agentId: cfg.agentId, boards: cfg.boards }));
+    console.log(JSON.stringify({ ok: true, path, global: Boolean(flags.global), agentId: cfg.agentId, boards: cfg.boards, workspace: cfg.workspace ?? null }));
   } else {
     console.log(`initialized ${flags.global ? 'global config ' : ''}${path}`);
     console.log(`  server : ${server}`);
     console.log(`  agent  : ${cfg.agentId ?? '(set --agent-id)'}`);
     console.log(`  roles  : ${cfg.roles.join(', ') || '(none)'}`);
+    if (cfg.workspace) console.log(`  ws     : ${cfg.workspace}`);
   }
 }
 
@@ -418,6 +422,8 @@ export async function cmdWhoami(flags, json) {
     boards: cfg.boards,
     provider: cfg.provider,
     server: cfg.server,
+    // #87: resolved workspace hint (undefined on single-workspace setups).
+    workspace: cfg.workspace,
     source: cfg.source,
     configFile: existsSync(cfg.path),
     env: {
@@ -425,6 +431,8 @@ export async function cmdWhoami(flags, json) {
       token: process.env.AB_TOKEN !== undefined,
       agentId: process.env.AB_AGENT_ID !== undefined,
       roles: process.env.AB_ROLES !== undefined,
+      workspace: process.env.AB_WORKSPACE !== undefined,
+      boards: process.env.AB_BOARDS !== undefined,
     },
   };
   if (json) {
@@ -435,9 +443,10 @@ export async function cmdWhoami(flags, json) {
     console.log(`boards  : ${info.boards.join(', ') || '(none)'}`);
     console.log(`provider: ${info.provider ?? '(unset)'}`);
     console.log(`server  : ${info.server ?? '(unset)'}`);
+    if (info.workspace !== undefined) console.log(`workspace: ${info.workspace}`);
     console.log(`source  : ${cfg.source}`);
     console.log(`config  : ${sourceText}`);
-    console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles}`);
+    console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles} workspace=${info.env.workspace} boards=${info.env.boards}`);
   }
 }
 
@@ -584,13 +593,20 @@ function cmdQuote(s) {
  * passing /d /s /c avoids Node's DEP0190 shell:true warning and lets us quote
  * the args ourselves (shell:true merely concatenates, which is the bug the
  * live test caught). POSIX: plain exec of the `opencode` binary.
+ *
+ * #93b (win32 EPIPE hazard): the worker is spawned DETACHED with stdio
+ * 'ignore' so a clean exit of `ab spawn` cannot kill it — with 'inherit',
+ * closing the spawner's stdout/stderr pipes (EPIPE) tears the worker down the
+ * moment the parent exits. The worker heartbeats on its own; its output is
+ * its board replies, not this console.
  */
 function spawnWorker(args, env) {
+  const opts = { env, stdio: 'ignore', detached: true };
   if (process.platform === 'win32') {
     const cmdline = ['opencode', ...args.map(cmdQuote)].join(' ');
-    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmdline], { env, stdio: 'inherit' });
+    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmdline], opts);
   }
-  return spawn('opencode', args, { env, stdio: 'inherit' });
+  return spawn('opencode', args, opts);
 }
 
 /** Synchronous `opencode` invocation (pre-flight). Same .cmd-shim handling. */
@@ -757,6 +773,9 @@ export async function cmdSpawn(flags, json) {
       AB_TOKEN: cfg.token,
       AB_AGENT_ID: agentId,
       AB_ROLES: role,
+      // #93a: the spawned session knows its board up front — makes the
+      // agentboard-wake plugin bindable without a join round-trip.
+      AB_BOARD: board,
     };
     const child = spawnWorker(args, childEnv);
     child.on('error', (err) => {

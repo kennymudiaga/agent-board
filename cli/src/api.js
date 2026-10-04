@@ -19,6 +19,10 @@ export async function apiCall(cfg, method, path, { agent, body } = {}) {
     'content-type': 'application/json',
   };
   if (agent) headers['x-agent-id'] = agent;
+  // Sprint 8 T5 (#87): the workspace hint is sent ONLY when configured
+  // (flag/config/AB_WORKSPACE). Single-workspace servers ignore the header;
+  // multi-workspace servers scope by the token and may cross-check it.
+  if (cfg.workspace) headers['x-workspace-id'] = cfg.workspace;
 
   let res;
   try {

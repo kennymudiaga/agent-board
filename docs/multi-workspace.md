@@ -1,10 +1,17 @@
-# Multi-Workspace Server — design + spike (sprint 7 T3, issue #79)
+# Multi-Workspace Server — design + implementation (sprint 7 T3 design, sprint 8 W1–W5)
 
 > **Decision (sprint 6 §10.6):** the next structural step is a **multi-workspace
 > server** — one server process hosting many workspaces, each with its own
 > boards, agents, and tokens. Full board-to-board federation stays a v1
-> concern. This document is the reviewed design; implementation issues are
-> filed for the next sprint. **No production behavior changes here.**
+> concern.
+>
+> **Status: IMPLEMENTED in sprint 8 (issues #83–#87, shipped in v0.4.0).** W1
+> (#83) workspaces table + bootstrap + token hashing; W2 (#84) middleware
+> workspace resolution + admin endpoints; W3 (#85) store scoping + migration;
+> W4 (#86) API/SSE/A2A scoping + isolation tests (security gate, QA-signed);
+> W5 (#87) CLI `--workspace` + mode advertisement + this deployment doc.
+> Sections 1–7 below are the reviewed design; §8 is the operator-facing
+> deployment guide.
 
 ## 1. Model
 
@@ -110,7 +117,8 @@ DBs per workspace).**
 
 **Small–medium** (per §10.6): the design is additive at every layer; the work
 is mechanical breadth (store signatures + query predicates) plus the admin
-endpoint and CLI flag. Filed for the next sprint:
+endpoint and CLI flag. Filed as implementation issues (all landed in sprint
+8):
 
 - **W1 (#83)** — `workspaces` table + bootstrap from config/env + token hashing.
 - **W2 (#84)** — middleware workspace resolution (`c.set('workspaceId')`) + admin
@@ -121,3 +129,80 @@ endpoint and CLI flag. Filed for the next sprint:
 - **W5 (#87)** — CLI `--workspace` (+ config field) and docs.
 
 Each issue references this document; none changes single-workspace behavior.
+
+## 8. Deployment — one server, many teams (sprint 8, W5 #87)
+
+This section is the operator-facing guide for standing up a multi-workspace
+server and pointing CLI clients at it.
+
+### 8.1 Server
+
+- One process serves any number of workspaces. There is no per-workspace
+  config: workspaces are **DB rows**, bootstrapped from config/env and minted
+  at runtime through the admin API.
+- The server's own workspace: `AB_WORKSPACE` env (default `default`) + the
+  configured token (`AB_TOKEN`). The bootstrap row is created idempotently on
+  startup — single-workspace deployments run exactly as before.
+- **Mode advertisement:** `GET /healthz` returns
+  `{ "status": "ok", "multiWorkspace": true }`. Clients can degrade
+  gracefully: only offer `--workspace` when the server advertises it. A
+  single-workspace client (no workspace configured) works unchanged against
+  any server.
+
+### 8.2 Minting a workspace (admin)
+
+Workspace tokens are shown **once** and hashed (SHA-256) at rest — store them
+like passwords. They are minted with the workspace/admin token:
+
+```http
+POST /v1/workspaces
+Authorization: Bearer <workspace-token>
+Content-Type: application/json
+
+{ "id": "acme", "name": "Acme" }
+```
+
+→ `201 { "id": "acme", "token": "abw_…", "note": "store this token now — it is only shown once" }`
+
+- Token format: `abw_` + 48 hex chars (per-agent tokens are `abt_…`).
+- `DELETE /v1/workspaces/acme` revokes the token (the row and its data
+  remain; deletion is a separate, explicit operation).
+- Admin endpoints (`/v1/workspaces`, `/v1/tokens`) accept **workspace tokens
+  only** — per-agent tokens can never mint or revoke.
+
+### 8.3 Per-team credentials (CLI)
+
+Each team configures its own identity — a private workspace token plus an
+optional workspace hint. Two teams sharing one server:
+
+```bash
+# Team Acme — repo-local config
+ab init --server http://board:8080 --token abw_…acme… --agent-id producer-1 --roles producer --workspace acme
+
+# Team Globex — repo-local config
+ab init --server http://board:8080 --token abw_…globex… --agent-id producer-1 --roles producer --workspace globex
+```
+
+- The workspace hint is **optional** (`--workspace <id>`, config field
+  `workspace`, or `AB_WORKSPACE` env). The CLI sends it only when set; a
+  single-workspace server ignores it. The server's authorization is the
+  token — the hint is advisory (e.g. to cross-check or for observability).
+- Machine-wide config (`ab init --global`) accepts `--workspace` the same
+  way, so any repo on the machine inherits the team's workspace hint.
+- Env-only identities override the file at runtime:
+  `AB_SERVER=… AB_TOKEN=abw_… AB_AGENT_ID=dev-1 AB_ROLES=dev AB_WORKSPACE=globex AB_BOARDS=sprint-8 ab heartbeat …`
+  (`AB_BOARDS` pins the boards list the same way `ab join` would).
+
+### 8.4 Security note — tokens are per-team credentials
+
+- **A workspace token is the team's credential**: anyone holding `abw_…`
+  can run that workspace's boards, agents, and message traffic — and mint
+  per-agent tokens inside it. Treat it like a service account; rotate by
+  re-minting (`POST` again atomically replaces the stored hash) or revoke.
+- **Agent tokens can never cross workspaces.** A per-agent token resolves to
+  the agent's row, which carries its `workspace_id` — the same agent id in
+  two workspaces is a distinct identity with a distinct token, and token A
+  can never read, claim, ack, requeue, or purge workspace B's mail (T4
+  isolation test suite). One leaked agent token exposes exactly one agent in
+  one workspace — never the server, never other teams.
+- Never put tokens in messages, logs, issues, or PRs (conventions §6).

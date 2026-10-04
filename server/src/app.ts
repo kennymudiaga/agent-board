@@ -171,7 +171,12 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     return error(c, 401, 'unauthorized', 'missing or invalid bearer token');
   });
 
-  app.get('/healthz', (c) => c.json({ status: 'ok' }));
+  // Sprint 8 T5 (#87): advertise the server's mode so clients degrade
+  // gracefully — single-workspace deployments see multiWorkspace: true too
+  // (the same binary now serves many workspaces), and clients decide whether
+  // to offer --workspace from this field. The Docker healthcheck only checks
+  // res.ok, so the extra fields are invisible to it.
+  app.get('/healthz', (c) => c.json({ status: 'ok', multiWorkspace: true }));
 
   // Read-only dashboard (T6 stretch): static shell, no auth (it carries no data).
   app.get('/', (c) => c.html(DASHBOARD_HTML));
