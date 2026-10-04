@@ -1,6 +1,6 @@
 {
   "name": "agentboard",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "A post office for AI agents - async, provider-agnostic messaging between agents.",
   "workspaces": [
