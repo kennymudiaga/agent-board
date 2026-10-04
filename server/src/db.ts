@@ -47,6 +47,19 @@ export interface AgentRecord {
   presence: 'online' | 'offline';
 }
 
+export interface WorkspaceInput {
+  id: string;
+  name?: string;
+  tokenHash?: string | null;
+}
+
+export interface WorkspaceRecord {
+  id: string;
+  name: string;
+  tokenHash: string | null;
+  createdAt: string;
+}
+
 export interface MessageInput {
   board: string;
   from: string;
@@ -159,9 +172,25 @@ interface AgentRow {
   created_at: number;
 }
 
+interface WorkspaceRow {
+  id: string;
+  name: string;
+  token_hash: string | null;
+  created_at: number;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS boards (
   name       TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
+-- Multi-workspace server (sprint 8 T1, issue #83): one row per workspace;
+-- the workspace token is stored SHA-256 hashed (same as agent tokens §5.9).
+CREATE TABLE IF NOT EXISTS workspaces (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  token_hash TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -329,6 +358,68 @@ export class Store {
       createdAt: new Date(r.created_at).toISOString(),
       messageCount: r.message_count,
     }));
+  }
+
+  // ------------------------------------------------------------- workspaces
+
+  private toWorkspace(r: WorkspaceRow): WorkspaceRecord {
+    return {
+      id: r.id,
+      name: r.name,
+      tokenHash: r.token_hash,
+      createdAt: new Date(r.created_at).toISOString(),
+    };
+  }
+
+  private getWorkspace(id: string): WorkspaceRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow | undefined;
+    return row ? this.toWorkspace(row) : undefined;
+  }
+
+  /**
+   * Create a workspace row idempotently (sprint 8 T1, #83): INSERT OR IGNORE
+   * semantics — an existing row (and its token hash) is never clobbered.
+   * Returns the row and whether this call created it.
+   */
+  createWorkspace(input: WorkspaceInput, now: number): { workspace: WorkspaceRecord; created: boolean } {
+    const info = this.db
+      .prepare('INSERT OR IGNORE INTO workspaces (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)')
+      .run(input.id, input.name ?? input.id, input.tokenHash ?? null, now);
+    return { workspace: this.getWorkspace(input.id)!, created: info.changes > 0 };
+  }
+
+  /** All workspaces, id-ordered (sprint 8 T1, #83). */
+  listWorkspaces(): WorkspaceRecord[] {
+    const rows = this.db.prepare('SELECT * FROM workspaces ORDER BY id ASC').all() as WorkspaceRow[];
+    return rows.map((r) => this.toWorkspace(r));
+  }
+
+  /**
+   * Resolve a bearer token to its workspace (sprint 8 T1, #83): SHA-256 hash
+   * lookup, mirroring agent-token resolution (§5.9). `null` when no workspace
+   * holds this token. Workspace tokens have no expiry in v0.4.
+   */
+  workspaceForToken(bearer: string): WorkspaceRecord | null {
+    const hash = createHash('sha256').update(bearer).digest('hex');
+    const row = this.db.prepare('SELECT * FROM workspaces WHERE token_hash = ?').get(hash) as WorkspaceRow | undefined;
+    return row ? this.toWorkspace(row) : null;
+  }
+
+  /** Revoke a workspace token (sprint 8 T1, #83): clears the stored hash; the row remains. */
+  revokeWorkspaceToken(id: string): void {
+    this.db.prepare('UPDATE workspaces SET token_hash = NULL WHERE id = ?').run(id);
+  }
+
+  /**
+   * Startup bootstrap (sprint 8 T1, #83): the initial workspace
+   * (`AB_WORKSPACE`, default `default`) + the configured token create the row
+   * idempotently if missing. The token is stored SHA-256 hashed — plaintext
+   * only ever enters via env/config. An existing row is untouched (no rotation
+   * on restart), so a single-workspace deployment behaves exactly as today.
+   */
+  bootstrapWorkspace(workspaceId: string, token: string, now: number): WorkspaceRecord {
+    const hash = createHash('sha256').update(token).digest('hex');
+    return this.createWorkspace({ id: workspaceId, tokenHash: hash }, now).workspace;
   }
 
   // ------------------------------------------------------------------ agents
