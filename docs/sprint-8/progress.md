@@ -9,8 +9,8 @@
 | T1 — W1 workspaces table + bootstrap (#83) | **MERGED + QA PASS** | PR [#91](https://github.com/kennymudiaga/agent-board/pull/91) (merge `3cd3519`); independent QA: **PASS** — `docs/qa/sprint-8-signoff.md` (via PR [#92](https://github.com/kennymudiaga/agent-board/pull/92)); #83 closed |
 | T2 — W2 middleware + admin endpoints (#84) | **MERGED + QA PASS** | PR [#94](https://github.com/kennymudiaga/agent-board/pull/94) (merge `f9b182b`); independent QA: **PASS** (qa-4) — sign-off `f55b403` in PR head; suite 156/156 (147 unchanged) incl. `server/test/workspaces-admin.test.ts` 9/9; #84 closed |
 | T3 — W3 store scoping + migration (#85) | **MERGED + QA PASS** | PR [#95](https://github.com/kennymudiaga/agent-board/pull/95) (merge `26228432`; rebase `8325d91` + sign-off `239556f` folded in); independent QA: **PASS** (qa-5, `33c85d8`) — 30/30 migration/index checks, all 19 public store methods scoped; suite **161/161**; #85 closed. T4-bound findings recorded |
-| T4 — W4 API/SSE/A2A scoping + isolation tests (#86) | **implemented — PR open** | PR [#96](https://github.com/kennymudiaga/agent-board/pull/96) (branch `feat/isolation-86`); suite **170/170** (161 unchanged + 9 new); isolation + legacy hardening evidence below; **awaiting independent QA sign-off (security gate)** |
-| T5 — W5 CLI `--workspace` + docs (#87) | pending (after T4) | |
+| T4 — W4 API/SSE/A2A scoping + isolation tests (#86) | **MERGED + QA PASS (security gate)** | PR [#96](https://github.com/kennymudiaga/agent-board/pull/96) (merge `55a26da9`); independent QA: **PASS** (qa-6, sign-off `8d6f34f` via PR [#97](https://github.com/kennymudiaga/agent-board/pull/97) merged `6c63624a`) — isolation suite 6/6 + 11 beyond-suite probes, PK-rebuild rollback injection tests, fresh-DB no-op; suite **170/170**; #86 closed |
+| T5 — W5 CLI `--workspace` + docs (#87) | **dispatched** | request `s8-t5` → `agent:dev-4` (spawned; includes cheap #93 items: `AB_BOARD` in spawn env, win32 spawn EPIPE fix, `AB_BOARDS` env override) |
 | T6 — release v0.4.0 (#90) | pending (after T1–T5 + QA) | |
 
 ## Verification record
