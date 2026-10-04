@@ -9,8 +9,8 @@
 | T1 — wake lazy binding + global fallback (#101) | **MERGED + QA PASS** | PR [#103](https://github.com/kennymudiaga/agent-board/pull/103) (merge `e5c317c6`); independent QA: **PASS** (qa-8) — 8/8 points, sign-off `docs/qa/sprint-9-signoff.md`; live fresh-clone verification; 186/186; #101 closed |
 | T2 — spawn observability (#93) | **MERGED + QA PASS** | PR [#104](https://github.com/kennymudiaga/agent-board/pull/104) (merge `f0e951d5`); independent QA: **PASS** (qa-8) — incl. live win32 shim smoke; 190/190; #93 closed (all items across sprint 8 T5 + this) |
 | T3 — ci.yml tag race (#100) | **MERGED + QA PASS** | PR [#105](https://github.com/kennymudiaga/agent-board/pull/105) (merge `7550277`); QA: **Ready** (qa-8) — 4/4 points; #100 closed |
-| T4 — presence/lease ergonomics (#102) | **PR ready** (dev-4) | PR <T4-PR>, commit <T4-SHA>; suite 191/191 (190 baseline unchanged) +1 hermetic renewal-attempts test; decision recorded in spec §6.1/§7 + conventions §3 + persona/SKILL/AGENTS templates |
-| T5 — release v0.4.1 | pending | |
+| T4 — presence/lease ergonomics (#102) | **MERGED + QA PASS** | PR [#106](https://github.com/kennymudiaga/agent-board/pull/106) (merge `8a83d043`); independent QA: **PASS** (qa-8) — no server change (renewal pinned); decision recorded spec §6.1/§7 + conventions §3; 191/191; #102 closed |
+| T5 — release v0.4.1 | **pending — awaiting human approval for publish** | after T1–T4 (all merged + QA PASS ×4) |
 
 ## Verification record
 
