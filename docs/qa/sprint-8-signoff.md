@@ -66,3 +66,106 @@
 - **Non-blocking:** `createWorkspace` defaults `name` to the id when omitted
   (design: `name TEXT NOT NULL`) — reasonable; matches the unit test's
   expectation.
+
+## T3 — W3 store scoping + migration + indexes (PR #95, issue #85)
+
+- **QA:** spawned worker `qa-5` (branch `review/pr-95` =
+  `origin/feat/store-scoping-85`, PR #95 head `a86f7c1`, exactly the 2 PR
+  commits `d799f8c` feat + `a86f7c1` docs; base pre-T2 `main` — per-request
+  `workspaceId` wiring is T4's job, so only the `'default'` constant path was
+  in scope).
+- **Verdict: PASS** — no blocking findings; back-compat and scoping evidence
+  below. Follow-ups are T4-bound (not reachable on this branch).
+- **Scope reviewed:** `server/src/db.ts` (schema + migration + 19 scoped
+  methods), `server/src/app.ts` + `server/src/a2a.ts` + `server/src/index.ts`
+  (call sites), `server/test/workspace-scoping.test.ts` (5 new tests),
+  `mcp/test/tools.test.js` (blast-radius fix), `docs/sprint-8/progress.md`
+  (a86f7c1).
+
+### Evidence
+
+1. **Migration on an existing DB (independent, 30/30 checks):** constructed a
+   legacy-schema DB seeded to the live-dogfood shape (4 boards / 14 agents /
+   73 messages / 47 deliveries) and opened it through `Store`. `workspace_id
+   TEXT NOT NULL DEFAULT 'default'` added to `{boards, agents, messages}` via
+   the additive `ensureColumn` helper; a check on all three tables shows
+   **every row in `'default'` (0 non-default)**. Scoped lookups correct:
+   `boardExists('default','board-a')` true, `boardExists('other-ws','board-a')`
+   false, `getAgent('other-ws','agent-00')` undefined, `listMessages('default',
+   'board-a')` = 19, `listBoards('default')` = 4 boards with message counts
+   intact. Fresh DBs get composite PKs `(workspace_id, name)` on boards and
+   `(workspace_id, id)` on agents; messages keep `id` PK (ids globally unique
+   — correct per design).
+2. **Indexes:** `idx_messages_ws_board_seq`, `idx_boards_ws_name`,
+   `idx_agents_ws_id`, `idx_workspaces_token_hash` present on **both** fresh
+   and migrated DBs; on fresh DBs `idx_messages_idem` is the workspace-scoped
+   unique index `(workspace_id, from_agent, idempotency_key)`. dev-5's
+   documented boundary **confirmed**: migrated legacy DBs keep the old
+   `(from_agent, idempotency_key)` index (same name, `IF NOT EXISTS` skips).
+   Probe: on a migrated DB, inserting the same `(from_agent, idempotency_key)`
+   in a second workspace throws `UNIQUE constraint failed:
+   messages.from_agent, messages.idempotency_key`; the same probe on a fresh
+   DB succeeds. **Assessment: non-blocking** — the only workspace reachable on
+   this branch is `'default'`, so the old global index cannot misbehave before
+   T4. It becomes a real (narrow) constraint only for a multi-workspace
+   deployment grown *from a migrated legacy DB* where two workspaces use the
+   same agent id with the same idempotency key — then `insertMessage` would
+   500 on the UNIQUE violation. Fix is a one-line migration addition
+   (`DROP INDEX IF EXISTS idx_messages_idem` before the workspace-scoped
+   create; safe because all legacy rows are in `'default'`).
+3. **Store scoping:** every store data method takes `workspaceId` first
+   (verified all 19 public method signatures); board lookups are
+   `(workspace_id, board)`; deliveries inherit their message's workspace via
+   the broadcast-member join (`workspace_id` + `json_each` on the member's
+   boards) and `listBoards` joins `m.workspace_id = b.workspace_id`; id-based
+   lookups are cross-workspace invisible (`getMessage('globex', acmeId)` →
+   undefined; ack/delete against the wrong workspace → `notFound`). All
+   `prepare()` sites in `db.ts` scoped (54 lines contain `prepare(` — the
+   design's "49 sites" estimate is the same class; message/board/agent methods
+   are the 26/4/9 split). Call sites verified in `app.ts` (14), `a2a.ts` (9)
+   and `index.ts` (createApp now passes `workspaceId` from `AB_WORKSPACE`,
+   default `'default'`); no stale old-signature call sites remain (build +
+   grep).
+4. **Back-compat:** canonical `npm test` at repo root on PR head →
+   **152/152 (15 files)** = 147 unchanged + 5 new
+   `server/test/workspace-scoping.test.ts` (legacy migration, index existence,
+   same board/agent across 2 workspaces, isolation, role/reader scoping). `npm
+   run build` (`tsc`) clean; `ab setup --check` up to date (11 files).
+5. **Blast-radius fix:** `mcp/test/tools.test.js` cleanup now calls
+   `deleteMessage('default', row.id, 'mcp-agent')` — correct: the MCP app is
+   `createApp(store, { token })` with no `workspaceId`, i.e. workspace
+   `'default'` (verified in `mcp/test/tools.test.js` + `e2e.test.js`, both
+   pass).
+6. **CI green:** `gh pr checks 95` → build-and-test ✅, docker ✅,
+   extension-ui ✅. PR #95 open, base `main`, head `a86f7c1` = my checkout,
+   mergeable.
+
+### Findings
+
+- **Blocking:** none.
+- **Non-blocking (T4-bound, same class as dev-5's documented boundary):**
+  migrated legacy DBs keep two single-workspace-shaped uniqueness constraints:
+  (a) the old `(from_agent, idempotency_key)` idempotency index (probe above),
+  and (b) the single-column `agents.id` PK — `upsertAgent`'s bare
+  `ON CONFLICT DO UPDATE` on a migrated DB keys agents by `id` only, so a
+  second workspace registering the same agent id post-T4 would overwrite the
+  first workspace's row (its `workspace_id` never changes — the update SET
+  list omits it — but its roles/boards/status would be hijacked). Both are
+  unreachable until T4 wires per-request workspaces + T2 creates real
+  workspaces; neither affects single-workspace behavior (verified). Recommend
+  T4 handle migrated-DB multi-workspace safely: either rebuild the three
+  tables' keys in the migration path (`DROP INDEX` + table-rebuild recipe) or
+  refuse non-`'default'` writes on legacy-schema DBs until rebuilt.
+- **Non-blocking (measurement):** migration measured **avg 7.8 ms (7.4–8.2,
+  3 runs) and +24 KB (+35% on the 68 KB fixture)** on a checkpointed file
+  versus the design's 3.9 ms / 0.0% — dev-5's 8.5 ms / +24 KB is confirmed.
+  The design's 0.0% was measured pre-checkpoint (WAL-buffered; my first run
+  reproduced 0.0% before `close()`). Honest read: single-digit-ms, +24 KB — a
+  one-time startup cost in the "3.9 ms class" the acceptance criterion asks
+  for; not blocking. Hot-path pickup overhead (+0.6 µs/query, design §5) not
+  re-measured — no new per-query joins on the hot path beyond the index-backed
+  `workspace_id` predicate (+1 indexed column).
+- **Non-blocking (informational):** `messages.seq` remains a global sequence
+  (unchanged from v0.3, still `UNIQUE`) — correct for isolation (no seq
+  collisions across workspaces), though cross-workspace seq gaps are a
+  cosmetic quirk only.
