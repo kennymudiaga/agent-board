@@ -180,9 +180,17 @@ interface WorkspaceRow {
 }
 
 const SCHEMA = `
+-- Multi-workspace server (sprint 8, issues #83/#85): every shared table
+-- carries workspace_id; boards/agents use composite primary keys so board
+-- names and agent ids may repeat across workspaces (isolation boundary).
+-- Legacy (pre-v0.4) databases keep their single-column PKs and gain the
+-- column via the additive migration in the constructor — rows land in
+-- workspace 'default' (back-compat).
 CREATE TABLE IF NOT EXISTS boards (
-  name       TEXT PRIMARY KEY,
-  created_at INTEGER NOT NULL
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  name         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (workspace_id, name)
 );
 
 -- Multi-workspace server (sprint 8 T1, issue #83): one row per workspace;
@@ -195,7 +203,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 CREATE TABLE IF NOT EXISTS agents (
-  id           TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  id           TEXT NOT NULL,
   provider     TEXT,
   roles        TEXT NOT NULL DEFAULT '[]',
   capabilities TEXT NOT NULL DEFAULT '[]',
@@ -205,11 +214,13 @@ CREATE TABLE IF NOT EXISTS agents (
   interval     INTEGER NOT NULL DEFAULT 60,
   last_seen    INTEGER NOT NULL,
   created_at   INTEGER NOT NULL,
-  token_hash   TEXT
+  token_hash   TEXT,
+  PRIMARY KEY (workspace_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
   id               TEXT PRIMARY KEY,
+  workspace_id     TEXT NOT NULL DEFAULT 'default',
   board            TEXT NOT NULL,
   seq              INTEGER NOT NULL UNIQUE,
   from_agent       TEXT NOT NULL,
@@ -233,8 +244,6 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_board_seq ON messages(board, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idem
-  ON messages(from_agent, idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS deliveries (
   message_id       TEXT NOT NULL,
@@ -250,6 +259,31 @@ CREATE TABLE IF NOT EXISTS deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_reader ON deliveries(reader_id, state);
 CREATE INDEX IF NOT EXISTS idx_deliveries_message ON deliveries(message_id);
+`;
+
+/**
+ * Multi-workspace lookup indexes (sprint 8 T3, issue #85). Created AFTER the
+ * additive `workspace_id` migration because legacy databases do not have the
+ * column until `ensureColumn` has run (CREATE INDEX inside SCHEMA would fail
+ * on them). Fresh databases get the columns from SCHEMA, so the same block
+ * works for both. `(workspace_id, board, seq)` serves the hot pickup query;
+ * `(workspace_id, name)`/`(workspace_id, id)` serve board/agent lookups
+ * (redundant with the composite PKs on fresh DBs, load-bearing on migrated
+ * legacy DBs). The idempotency unique index is workspace-scoped here too —
+ * agent ids may repeat across workspaces, so `(from_agent, idempotency_key)`
+ * alone is no longer globally unique (legacy DBs keep their pre-v0.4 index;
+ * single-workspace behavior is unchanged). `workspaces.token_hash` is indexed
+ * too (non-blocking, issue #85 note): W2 resolves the bearer token on every
+ * request via that hash lookup.
+ */
+const WORKSPACE_INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_messages_ws_board_seq ON messages(workspace_id, board, seq);
+CREATE INDEX IF NOT EXISTS idx_boards_ws_name ON boards(workspace_id, name);
+CREATE INDEX IF NOT EXISTS idx_agents_ws_id ON agents(workspace_id, id);
+-- W2 (#84) resolves the bearer on EVERY request via this hash lookup — index it.
+CREATE INDEX IF NOT EXISTS idx_workspaces_token_hash ON workspaces(token_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idem
+  ON messages(workspace_id, from_agent, idempotency_key) WHERE idempotency_key IS NOT NULL;
 `;
 
 interface DeliveryRow {
@@ -317,12 +351,20 @@ export class Store {
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
-    // Lightweight migrations for pre-v0.2 databases (CREATE IF NOT EXISTS does
-    // not add columns to existing tables).
+    // Lightweight migrations for pre-v0.2 databases (CREATE TABLE IF NOT
+    // EXISTS does not add columns to existing tables).
     this.ensureColumn('messages', 'deadline', 'INTEGER');
     this.ensureColumn('messages', 'late', "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn('agents', 'token_hash', 'TEXT');
     this.ensureColumn('agents', 'token_expires_at', 'INTEGER');
+    // Multi-workspace (sprint 8 T3, #85): additive `workspace_id` column on
+    // every shared table — measured 3.9 ms / 0% growth on the live DB copy;
+    // all rows land in workspace 'default' (back-compat). Then the workspace
+    // indexes (columns must exist before we index them).
+    this.ensureColumn('boards', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
+    this.ensureColumn('agents', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
+    this.ensureColumn('messages', 'workspace_id', "TEXT NOT NULL DEFAULT 'default'");
+    this.db.exec(WORKSPACE_INDEXES);
   }
 
   close(): void {
@@ -340,19 +382,25 @@ export class Store {
 
   // ------------------------------------------------------------------ boards
 
-  boardExists(name: string): boolean {
-    return this.db.prepare('SELECT 1 FROM boards WHERE name = ?').get(name) !== undefined;
+  /**
+   * Board lookup key is `(workspace_id, board)` (sprint 8 T3, #85): board
+   * names may repeat across workspaces, so presence is scoped.
+   */
+  boardExists(workspaceId: string, name: string): boolean {
+    return this.db.prepare('SELECT 1 FROM boards WHERE workspace_id = ? AND name = ?').get(workspaceId, name) !== undefined;
   }
 
-  /** Read-only board directory (v0.2.1, spec §5.8): every known board + message count. */
-  listBoards(): { name: string; createdAt: string; messageCount: number }[] {
+  /** Read-only board directory (v0.2.1, spec §5.8): every known board + message count, workspace-scoped. */
+  listBoards(workspaceId: string): { name: string; createdAt: string; messageCount: number }[] {
     const rows = this.db
       .prepare(
         `SELECT b.name, b.created_at, COUNT(m.id) AS message_count
-         FROM boards b LEFT JOIN messages m ON m.board = b.name
+         FROM boards b LEFT JOIN messages m
+           ON m.workspace_id = b.workspace_id AND m.board = b.name
+         WHERE b.workspace_id = ?
          GROUP BY b.name, b.created_at ORDER BY b.name ASC`,
       )
-      .all() as { name: string; created_at: number; message_count: number }[];
+      .all(workspaceId) as { name: string; created_at: number; message_count: number }[];
     return rows.map((r) => ({
       name: r.name,
       createdAt: new Date(r.created_at).toISOString(),
@@ -424,12 +472,20 @@ export class Store {
 
   // ------------------------------------------------------------------ agents
 
-  upsertAgent(input: AgentInput, now: number): AgentRecord {
+  /**
+   * Register/heartbeat an agent inside a workspace. The upsert targets no
+   * explicit conflict column (`ON CONFLICT DO UPDATE`): fresh databases key
+   * agents on `(workspace_id, id)` (issue #85) while migrated legacy tables
+   * keep `id` as the primary key — a bare-target upsert matches whichever
+   * uniqueness constraint the schema defines. Both schemas behave identically
+   * for single-workspace deployments.
+   */
+  upsertAgent(workspaceId: string, input: AgentInput, now: number): AgentRecord {
     this.db
       .prepare(
-        `INSERT INTO agents (id, provider, roles, capabilities, boards, status, current_task, interval, last_seen, created_at)
-         VALUES (@id, @provider, @roles, @capabilities, @boards, @status, @currentTask, @interval, @now, @now)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO agents (workspace_id, id, provider, roles, capabilities, boards, status, current_task, interval, last_seen, created_at)
+         VALUES (@workspaceId, @id, @provider, @roles, @capabilities, @boards, @status, @currentTask, @interval, @now, @now)
+         ON CONFLICT DO UPDATE SET
            provider = excluded.provider,
            roles = excluded.roles,
            capabilities = excluded.capabilities,
@@ -440,6 +496,7 @@ export class Store {
            last_seen = excluded.last_seen`,
       )
       .run({
+        workspaceId,
         id: input.agentId,
         provider: input.provider ?? null,
         roles: JSON.stringify(input.roles ?? []),
@@ -451,19 +508,21 @@ export class Store {
         now,
       });
     for (const board of input.boards ?? []) {
-      this.db.prepare('INSERT OR IGNORE INTO boards (name, created_at) VALUES (?, ?)').run(board, now);
+      this.db
+        .prepare('INSERT OR IGNORE INTO boards (workspace_id, name, created_at) VALUES (?, ?, ?)')
+        .run(workspaceId, board, now);
     }
-    return this.getAgent(input.agentId, now)!;
+    return this.getAgent(workspaceId, input.agentId, now)!;
   }
 
-  getAgent(id: string, now: number): AgentRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentRow | undefined;
+  getAgent(workspaceId: string, id: string, now: number): AgentRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM agents WHERE workspace_id = ? AND id = ?').get(workspaceId, id) as AgentRow | undefined;
     return row ? this.toAgentRecord(row, now) : undefined;
   }
 
-  listAgents(filters: AgentFilters, now: number): AgentRecord[] {
-    const where: string[] = [];
-    const params: unknown[] = [];
+  listAgents(workspaceId: string, filters: AgentFilters, now: number): AgentRecord[] {
+    const where: string[] = ['workspace_id = ?'];
+    const params: unknown[] = [workspaceId];
     if (filters.board) {
       where.push('EXISTS (SELECT 1 FROM json_each(agents.boards) WHERE value = ?)');
       params.push(filters.board);
@@ -502,10 +561,14 @@ export class Store {
   // ---------------------------------------------------------------- messages
 
   /**
-   * Insert a message. Returns `{ message }` on success or `{ duplicate }`
-   * with the original message id when the sender reuses an idempotencyKey.
+   * Insert a message into a workspace. Returns `{ message }` on success or
+   * `{ duplicate }` with the original message id when the sender reuses an
+   * idempotencyKey. Idempotency is workspace-scoped: agent ids may repeat
+   * across workspaces, so the uniqueness key is `(workspace_id, from_agent,
+   * idempotency_key)` (issue #85).
    */
   insertMessage(
+    workspaceId: string,
     input: MessageInput,
     now: number,
   ): { message: MessageRecord } | { duplicate: string } {
@@ -513,41 +576,48 @@ export class Store {
     const tx = this.db.transaction((): { message?: MessageRecord; duplicate?: string } => {
       if (input.idempotencyKey) {
         const existing = this.db
-          .prepare('SELECT id FROM messages WHERE from_agent = ? AND idempotency_key = ?')
-          .get(input.from, input.idempotencyKey) as { id: string } | undefined;
+          .prepare('SELECT id FROM messages WHERE workspace_id = ? AND from_agent = ? AND idempotency_key = ?')
+          .get(workspaceId, input.from, input.idempotencyKey) as { id: string } | undefined;
         if (existing) return { duplicate: existing.id };
       }
       // v0.2: a response to an expired question is accepted and flagged `late`.
       let late = 0;
       if (input.replyTo) {
         const target = this.db
-          .prepare('SELECT type, state, deadline FROM messages WHERE id = ?')
-          .get(input.replyTo) as { type: string; state: string; deadline: number | null } | undefined;
+          .prepare('SELECT type, state, deadline FROM messages WHERE id = ? AND workspace_id = ?')
+          .get(input.replyTo, workspaceId) as { type: string; state: string; deadline: number | null } | undefined;
         if (target && target.type === 'question' && (target.state === 'expired' || (target.deadline !== null && target.deadline < now))) {
           late = 1;
         }
       }
-      this.db.prepare('INSERT OR IGNORE INTO boards (name, created_at) VALUES (?, ?)').run(input.board, now);
+      this.db
+        .prepare('INSERT OR IGNORE INTO boards (workspace_id, name, created_at) VALUES (?, ?, ?)')
+        .run(workspaceId, input.board, now);
       const seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages').get() as { seq: number }).seq;
       this.db
         .prepare(
           `INSERT INTO messages
-             (id, board, seq, from_agent, to_kind, to_value, type, payload, priority,
+             (id, workspace_id, board, seq, from_agent, to_kind, to_value, type, payload, priority,
               ttl, deadline, late, idempotency_key, reply_to, state, attempts, claim_agent, lease_expires_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?)`,
         )
         .run(
-          id, input.board, seq, input.from, input.toKind, input.toValue, input.type,
+          id, workspaceId, input.board, seq, input.from, input.toKind, input.toValue, input.type,
           JSON.stringify(input.payload), input.priority, input.ttl, input.deadline, late,
           input.idempotencyKey, input.replyTo, now, now,
         );
       // Broadcast fan-out (v0.2): one delivery row per current board member —
       // online or offline; membership is the criterion. Late joiners do not
       // receive past broadcasts (spec §3.2). The sender is a member too.
+      // Members are scoped to the message's workspace (issue #85).
       if (input.toKind === 'broadcast') {
         const members = this.db
-          .prepare('SELECT id FROM agents WHERE EXISTS (SELECT 1 FROM json_each(agents.boards) WHERE value = ?)')
-          .all(input.board) as { id: string }[];
+          .prepare(
+            `SELECT id FROM agents
+             WHERE workspace_id = ?
+               AND EXISTS (SELECT 1 FROM json_each(agents.boards) WHERE value = ?)`,
+          )
+          .all(workspaceId, input.board) as { id: string }[];
         const ins = this.db.prepare(
           `INSERT INTO deliveries (message_id, reader_id, state, attempts, created_at, updated_at)
            VALUES (?, ?, 'pending', 0, ?, ?)`,
@@ -558,7 +628,7 @@ export class Store {
           this.db.prepare("UPDATE messages SET state = 'dead', updated_at = ? WHERE id = ?").run(now, id);
         }
       }
-      return { message: toMessage(this.getRow(id)!, { deliveries: this.deliveriesFor(id) }) };
+      return { message: toMessage(this.getRow(workspaceId, id)!, { deliveries: this.deliveriesFor(id) }) };
     });
     const result = tx();
     if (result.duplicate) return { duplicate: result.duplicate };
@@ -570,23 +640,23 @@ export class Store {
    * broadcasts) for `forAgent`. Runs housekeeping (lease expiry, ttl expiry)
    * first. Broadcast responses carry the caller's own `delivery`.
    */
-  claimMessages(board: string, forAgent: string, since: number, now: number): MessageRecord[] {
+  claimMessages(workspaceId: string, board: string, forAgent: string, since: number, now: number): MessageRecord[] {
     const tx = this.db.transaction(() => {
-      this.sweep(board, now);
+      this.sweep(workspaceId, board, now);
       const rows = this.db
         .prepare(
           `SELECT * FROM messages
-           WHERE board = ? AND state = 'pending' AND seq > ?
+           WHERE workspace_id = ? AND board = ? AND state = 'pending' AND seq > ?
              AND (
                (to_kind = 'agent' AND to_value = ?)
                OR (to_kind = 'role' AND to_value IN
-                     (SELECT value FROM json_each((SELECT roles FROM agents WHERE id = ?))))
+                     (SELECT value FROM json_each((SELECT roles FROM agents WHERE id = ? AND workspace_id = ?))))
                OR (to_kind = 'broadcast' AND EXISTS
                      (SELECT 1 FROM deliveries d WHERE d.message_id = messages.id AND d.reader_id = ? AND d.state = 'pending'))
              )
            ORDER BY seq ASC`,
         )
-        .all(board, since, forAgent, forAgent, forAgent) as MessageRow[];
+        .all(workspaceId, board, since, forAgent, forAgent, workspaceId, forAgent) as MessageRow[];
       if (rows.length === 0) return [];
       const updMsg = this.db.prepare(
         `UPDATE messages SET state = 'claimed', claim_agent = ?, lease_expires_at = ?,
@@ -618,13 +688,15 @@ export class Store {
   }
 
   /** Read-only observability view (dashboards, dead-letter inspection). Broadcasts include per-reader deliveries. */
-  listMessages(board: string, since: number, status: MsgState | undefined, now: number): MessageRecord[] {
-    this.sweep(board, now);
+  listMessages(workspaceId: string, board: string, since: number, status: MsgState | undefined, now: number): MessageRecord[] {
+    this.sweep(workspaceId, board, now);
     const rows = status
       ? (this.db
-          .prepare('SELECT * FROM messages WHERE board = ? AND seq > ? AND state = ? ORDER BY seq ASC')
-          .all(board, since, status) as MessageRow[])
-      : (this.db.prepare('SELECT * FROM messages WHERE board = ? AND seq > ? ORDER BY seq ASC').all(board, since) as MessageRow[]);
+          .prepare('SELECT * FROM messages WHERE workspace_id = ? AND board = ? AND seq > ? AND state = ? ORDER BY seq ASC')
+          .all(workspaceId, board, since, status) as MessageRow[])
+      : (this.db
+          .prepare('SELECT * FROM messages WHERE workspace_id = ? AND board = ? AND seq > ? ORDER BY seq ASC')
+          .all(workspaceId, board, since) as MessageRow[]);
     return rows.map((r) => toMessage(r, { ...(r.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(r.id) } : {}) }));
   }
 
@@ -640,33 +712,33 @@ export class Store {
    * claimed BY them. Claimed by another reader (role/broadcast race) or any
    * terminal state does not block.
    */
-  readerWatermark(board: string, reader: string, since: number, now: number): number {
-    this.sweep(board, now);
+  readerWatermark(workspaceId: string, board: string, reader: string, since: number, now: number): number {
+    this.sweep(workspaceId, board, now);
     const minSeq = this.db
       .prepare(
         `SELECT MIN(seq) AS min_seq FROM messages m
-         WHERE m.board = ? AND m.seq > ?
+         WHERE m.workspace_id = ? AND m.board = ? AND m.seq > ?
            AND (
              (m.to_kind = 'agent' AND m.to_value = ?
                AND m.state IN ('pending','claimed') AND (m.claim_agent IS NULL OR m.claim_agent = ?))
              OR (m.to_kind = 'role' AND m.to_value IN
-                   (SELECT value FROM json_each((SELECT roles FROM agents WHERE id = ?)))
+                   (SELECT value FROM json_each((SELECT roles FROM agents WHERE id = ? AND workspace_id = ?)))
                AND m.state IN ('pending','claimed') AND (m.claim_agent IS NULL OR m.claim_agent = ?))
              OR (m.to_kind = 'broadcast' AND EXISTS
                    (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.reader_id = ?
                     AND d.state IN ('pending','claimed')))
            )`,
       )
-      .get(board, since, reader, reader, reader, reader, reader) as { min_seq: number | null } | undefined;
+      .get(workspaceId, board, since, reader, reader, reader, workspaceId, reader, reader) as { min_seq: number | null } | undefined;
     if (minSeq?.min_seq != null) return minSeq.min_seq - 1;
     const maxSeq = this.db
-      .prepare('SELECT MAX(seq) AS max_seq FROM messages WHERE board = ?')
-      .get(board) as { max_seq: number | null };
+      .prepare('SELECT MAX(seq) AS max_seq FROM messages WHERE workspace_id = ? AND board = ?')
+      .get(workspaceId, board) as { max_seq: number | null };
     return maxSeq.max_seq ?? since;
   }
 
-  getMessage(id: string): MessageRecord | undefined {
-    const row = this.getRow(id);
+  getMessage(workspaceId: string, id: string): MessageRecord | undefined {
+    const row = this.getRow(workspaceId, id);
     return row
       ? toMessage(row, { ...(row.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(id) } : {}) })
       : undefined;
@@ -675,12 +747,15 @@ export class Store {
   /**
    * Direct replies to a message (thread children), oldest first. Sweeps the
    * board first so callers observe fresh states (used by the A2A relay).
+   * Replies are scoped to the parent's workspace (issue #85).
    */
-  listReplies(messageId: string, now: number): MessageRecord[] {
-    const row = this.getRow(messageId);
+  listReplies(workspaceId: string, messageId: string, now: number): MessageRecord[] {
+    const row = this.getRow(workspaceId, messageId);
     if (!row) return [];
-    this.sweep(row.board, now);
-    const rows = this.db.prepare('SELECT * FROM messages WHERE reply_to = ? ORDER BY seq ASC').all(messageId) as MessageRow[];
+    this.sweep(workspaceId, row.board, now);
+    const rows = this.db
+      .prepare('SELECT * FROM messages WHERE reply_to = ? AND workspace_id = ? ORDER BY seq ASC')
+      .all(messageId, workspaceId) as MessageRow[];
     return rows.map((r) => toMessage(r));
   }
 
@@ -690,13 +765,14 @@ export class Store {
    * (`not_claimer` | `invalid_transition`).
    */
   ackMessage(
+    workspaceId: string,
     id: string,
     claimer: string,
     status: AckStatus,
     error: string | null,
     now: number,
   ): { message: MessageRecord } | { notFound: true } | { conflict: 'not_claimer' | 'invalid_transition' } {
-    const row = this.getRow(id);
+    const row = this.getRow(workspaceId, id);
     if (!row) return { notFound: true };
     if (row.to_kind === 'broadcast') {
       const delivery = this.deliveryFor(id, claimer);
@@ -717,8 +793,8 @@ export class Store {
           .prepare("UPDATE deliveries SET state = ?, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE message_id = ? AND reader_id = ?")
           .run(nextState, now, id, claimer);
       }
-      this.recomputeMessageState(id, now);
-      return { message: toMessage(this.getRow(id)!, { delivery: this.deliveryFor(id, claimer)! }) };
+      this.recomputeMessageState(workspaceId, id, now);
+      return { message: toMessage(this.getRow(workspaceId, id)!, { delivery: this.deliveryFor(id, claimer)! }) };
     }
     if (row.state !== 'claimed' || row.claim_agent !== claimer) {
       return { conflict: row.state !== 'claimed' ? 'invalid_transition' : 'not_claimer' };
@@ -740,7 +816,7 @@ export class Store {
         .prepare("UPDATE messages SET state = ?, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
         .run(nextState, now, id);
     }
-    return { message: toMessage(this.getRow(id)!) };
+    return { message: toMessage(this.getRow(workspaceId, id)!) };
   }
 
   // ------------------------------------------------------------------ misc
@@ -752,25 +828,26 @@ export class Store {
    * minimal agent row when the agent hasn't heartbeated yet (provisioning).
    * Expiry is per-token (the stored hash carries its own expires_at): a mint
    * for an agent that already has a token atomically REPLACES the hash —
-   * rotation by construction (the old token dies immediately).
+   * rotation by construction (the old token dies immediately). Agents are
+   * keyed per-workspace (issue #85) — the minted identity is scoped.
    */
-  mintToken(agentId: string, now: number, ttlDays?: number): { token: string; expiresAt: string | null } {
+  mintToken(workspaceId: string, agentId: string, now: number, ttlDays?: number): { token: string; expiresAt: string | null } {
     const token = `abt_${randomBytes(24).toString('hex')}`;
     const hash = createHash('sha256').update(token).digest('hex');
     const expiresAt = ttlDays !== undefined && ttlDays > 0 ? now + ttlDays * 86_400_000 : null;
     this.db
       .prepare(
-        `INSERT INTO agents (id, status, interval, last_seen, created_at, token_hash, token_expires_at)
-         VALUES (?, 'idle', 60, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, token_expires_at = excluded.token_expires_at`,
+        `INSERT INTO agents (workspace_id, id, status, interval, last_seen, created_at, token_hash, token_expires_at)
+         VALUES (?, ?, 'idle', 60, ?, ?, ?, ?)
+         ON CONFLICT DO UPDATE SET token_hash = excluded.token_hash, token_expires_at = excluded.token_expires_at`,
       )
-      .run(agentId, now, now, hash, expiresAt);
+      .run(workspaceId, agentId, now, now, hash, expiresAt);
     return { token, expiresAt: expiresAt !== null ? new Date(expiresAt).toISOString() : null };
   }
 
   /** Revoke an agent's token (admin-only). */
-  revokeToken(agentId: string): void {
-    this.db.prepare('UPDATE agents SET token_hash = NULL, token_expires_at = NULL WHERE id = ?').run(agentId);
+  revokeToken(workspaceId: string, agentId: string): void {
+    this.db.prepare('UPDATE agents SET token_hash = NULL, token_expires_at = NULL WHERE workspace_id = ? AND id = ?').run(workspaceId, agentId);
   }
 
   /**
@@ -795,11 +872,12 @@ export class Store {
    * there is nothing to redeliver to (409 state_conflict).
    */
   requeueMessage(
+    workspaceId: string,
     id: string,
     sender: string,
     now: number,
   ): { message: MessageRecord } | { notFound: true } | { forbidden: true } | { wrongState: true } {
-    const row = this.getRow(id);
+    const row = this.getRow(workspaceId, id);
     if (!row) return { notFound: true };
     if (row.from_agent !== sender) return { forbidden: true };
     if (row.state !== 'dead') return { wrongState: true };
@@ -811,18 +889,18 @@ export class Store {
       this.db
         .prepare("UPDATE deliveries SET state = 'pending', attempts = 0, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE message_id = ?")
         .run(now, id);
-      this.recomputeMessageState(id, now);
+      this.recomputeMessageState(workspaceId, id, now);
     } else {
       this.db
         .prepare("UPDATE messages SET state = 'pending', attempts = 0, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
         .run(now, id);
     }
-    return { message: this.getMessage(id)! };
+    return { message: this.getMessage(workspaceId, id)! };
   }
 
   /** Delete a message and its deliveries (v0.2, spec §5.7). Sender-only. */
-  deleteMessage(id: string, sender: string): { ok: true } | { notFound: true } | { forbidden: true } {
-    const row = this.getRow(id);
+  deleteMessage(workspaceId: string, id: string, sender: string): { ok: true } | { notFound: true } | { forbidden: true } {
+    const row = this.getRow(workspaceId, id);
     if (!row) return { notFound: true };
     if (row.from_agent !== sender) return { forbidden: true };
     this.db.prepare('DELETE FROM deliveries WHERE message_id = ?').run(id);
@@ -830,8 +908,8 @@ export class Store {
     return { ok: true };
   }
 
-  private getRow(id: string): MessageRow | undefined {
-    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as MessageRow | undefined;
+  private getRow(workspaceId: string, id: string): MessageRow | undefined {
+    return this.db.prepare('SELECT * FROM messages WHERE id = ? AND workspace_id = ?').get(id, workspaceId) as MessageRow | undefined;
   }
 
   private getDeliveryRow(messageId: string, readerId: string): DeliveryRow | undefined {
@@ -858,8 +936,8 @@ export class Store {
    * when all failed, `expired` when all expired. Zero deliveries -> `dead`
    * (a broadcast nobody was subscribed to can never be delivered).
    */
-  private recomputeMessageState(messageId: string, now: number): void {
-    const row = this.getRow(messageId);
+  private recomputeMessageState(workspaceId: string, messageId: string, now: number): void {
+    const row = this.getRow(workspaceId, messageId);
     if (!row || row.to_kind !== 'broadcast') return;
     const counts = this.db
       .prepare('SELECT state, COUNT(*) AS n FROM deliveries WHERE message_id = ? GROUP BY state')
@@ -881,40 +959,40 @@ export class Store {
   }
 
   /** Lazy housekeeping: expired leases return to pending (or dead at max attempts); ttl-expired messages die. */
-  private sweep(board: string, now: number): void {
+  private sweep(workspaceId: string, board: string, now: number): void {
     // Non-broadcast message leases.
     this.db
       .prepare(
         `UPDATE messages
          SET state = CASE WHEN attempts >= ? THEN 'dead' ELSE 'pending' END,
              claim_agent = NULL, lease_expires_at = NULL, updated_at = ?
-         WHERE board = ? AND state = 'claimed' AND to_kind != 'broadcast'
+         WHERE workspace_id = ? AND board = ? AND state = 'claimed' AND to_kind != 'broadcast'
            AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
       )
-      .run(MAX_ATTEMPTS, now, board, now);
+      .run(MAX_ATTEMPTS, now, workspaceId, board, now);
     // Broadcast delivery leases — independent per reader.
     this.db
       .prepare(
         `UPDATE deliveries
          SET state = CASE WHEN attempts >= ? THEN 'dead' ELSE 'pending' END,
              claim_agent = NULL, lease_expires_at = NULL, updated_at = ?
-         WHERE message_id IN (SELECT id FROM messages WHERE board = ? AND to_kind = 'broadcast')
+         WHERE message_id IN (SELECT id FROM messages WHERE workspace_id = ? AND board = ? AND to_kind = 'broadcast')
            AND state = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
       )
-      .run(MAX_ATTEMPTS, now, board, now);
+      .run(MAX_ATTEMPTS, now, workspaceId, board, now);
     // TTL / deadline expiry: pending/claimed past ttl (or, for questions, past
     // deadline) -> expired. Applies to whole messages (broadcasts expire all
     // their readers' deliveries at once).
     const expiredIds = this.db
       .prepare(
         `SELECT id FROM messages
-         WHERE board = ? AND state IN ('pending','claimed')
+         WHERE workspace_id = ? AND board = ? AND state IN ('pending','claimed')
            AND (
              (ttl IS NOT NULL AND ttl > 0 AND (created_at + ttl * 1000) < ?)
              OR (type = 'question' AND deadline IS NOT NULL AND deadline < ?)
            )`,
       )
-      .all(board, now, now) as { id: string }[];
+      .all(workspaceId, board, now, now) as { id: string }[];
     if (expiredIds.length > 0) {
       const ids = expiredIds.map((r) => r.id);
       const placeholders = ids.map(() => '?').join(',');
@@ -934,8 +1012,8 @@ export class Store {
     // Recompute broadcast aggregates so message state tracks its deliveries
     // (including broadcasts that just expired — "any done wins" per §6.1).
     const broadcasts = this.db
-      .prepare("SELECT id FROM messages WHERE board = ? AND to_kind = 'broadcast'")
-      .all(board) as { id: string }[];
-    for (const b of broadcasts) this.recomputeMessageState(b.id, now);
+      .prepare("SELECT id FROM messages WHERE workspace_id = ? AND board = ? AND to_kind = 'broadcast'")
+      .all(workspaceId, board) as { id: string }[];
+    for (const b of broadcasts) this.recomputeMessageState(workspaceId, b.id, now);
   }
 }

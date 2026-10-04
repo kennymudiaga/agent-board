@@ -20,7 +20,10 @@ const store = new Store(dbPath);
 // Idempotent bootstrap: creates the workspace row (token hashed at rest) if
 // missing; never touches an existing row. No single-workspace behavior change.
 store.bootstrapWorkspace(workspaceId, workspaceToken, Date.now());
-const app = createApp(store);
+// Sprint 8 T3 (#85): the app scopes every store call to the same workspace
+// the bootstrap seeded (AB_WORKSPACE, default 'default'). T2 replaces this
+// constant with per-request token resolution.
+const app = createApp(store, { token: workspaceToken, workspaceId });
 
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`[agentboard] listening on :${info.port} (db: ${dbPath})`);
