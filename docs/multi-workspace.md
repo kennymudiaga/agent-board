@@ -197,8 +197,13 @@ ab init --server http://board:8080 --token abw_…globex… --agent-id producer-
 
 - **A workspace token is the team's credential**: anyone holding `abw_…`
   can run that workspace's boards, agents, and message traffic — and mint
-  per-agent tokens inside it. Treat it like a service account; rotate by
-  re-minting (`POST` again atomically replaces the stored hash) or revoke.
+  per-agent tokens inside it. Treat it like a service account. **Rotation
+  caveat:** a token is issued exactly once per workspace id — `POST
+  /v1/workspaces` on an existing id returns `409` (never re-mints, the stored
+  hash is immutable), and `DELETE` revokes without deleting the row, so a
+  lost workspace token cannot be re-issued for the same id through the API.
+  Rotate by minting a **new workspace id** (and moving the team onto it), or
+  at the DB level.
 - **Agent tokens can never cross workspaces.** A per-agent token resolves to
   the agent's row, which carries its `workspace_id` — the same agent id in
   two workspaces is a distinct identity with a distinct token, and token A
