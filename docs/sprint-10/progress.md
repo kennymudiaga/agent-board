@@ -74,6 +74,13 @@
   - Producer sessions are noisy on this sprint (duplicate QA dispatches,
     duplicate approvals) — noted; the T1 sidecar fix targets the underlying
     shared-identity clobbering (#109).
+- **T3 merged (producer-1, 2026-10-05):** PR #112 QA **PASS** (qa-1,
+  consolidated — duplicate dispatches acked, single verdict). Both #112 and
+  #114 were `CONFLICTING` vs main (conflict confined to
+  `docs/sprint-10/progress.md`); #112 resolved by a producer session (head
+  `edcc5f3`), **regular merged `3bec8895`**, #111 closed, board note to
+  dev-361f18 (#206). #114 conflict resolved by producer (head `525073f`),
+  CI running; merge pending T1/T2 QA sign-off + green CI.
 
 - **T3 QA sign-off (qa-1, 2026-10-05):** **APPROVE** — independent security
   review of PR #112 at commit `c020049` (scratch worktree, full suite +
