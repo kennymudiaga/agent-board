@@ -23,6 +23,18 @@ export function addressedTo(m, forId, roles) {
   return m.to.startsWith('role:') && roles.includes(m.to.slice('role:'.length));
 }
 
+/**
+ * Coerce `AB_WAKE_RESOLVE_MS` (sprint 10 T2, #110 follow-up): a non-numeric
+ * value previously became NaN and the lazy-resolve loop re-fired as fast as
+ * the event loop allowed (setInterval(NaN) ≈ 0ms — a hot spin). Invalid or
+ * unset values fall back to the default; sub-second values are clamped up (a
+ * sub-second re-resolve loop is never intended).
+ */
+export function wakeResolveMs(env = process.env, fallback = 5000) {
+  const n = Number(env.AB_WAKE_RESOLVE_MS);
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
 /** The injection text: message id, board, thread refs, sender, text. */
 export function buildWakePrompt(m) {
   const text = m.payload && typeof m.payload.text === 'string' ? m.payload.text : JSON.stringify(m.payload ?? null);

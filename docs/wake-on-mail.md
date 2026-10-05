@@ -96,6 +96,36 @@ Attachable sessions (tier 2, `ab watch`): `ab watch --opencode` spawns
 let a human attach to a running headless session — the watch daemon path
 (dogfoods `ab spawn`; see the tier-2 row above).
 
+### 3.2 win32 `--exec` quoting (issue #110)
+
+`--exec` is **one shell-invoked token** — the watcher spawns the value as a
+single command line with `shell: true`. Multi-word commands must therefore
+arrive as ONE quoted argv entry:
+
+```bash
+# correct — one quoted token
+ab watch --board sprint-8 --for qa-1 --exec "node C:\tools\recorder.cjs"
+
+# broken on win32 — a launcher that re-joins argv with spaces (e.g.
+# Start-Process -ArgumentList) splits this into `--exec node` + a positional:
+# the watcher fires a bare `node` REPL instead of the recorder.
+ab watch --board sprint-8 --for qa-1 --exec "node C:\tools\recorder.cjs"   # via a non-quoting launcher
+```
+
+Guidance:
+
+- **Quote the whole command** (`--exec "node script.cjs"`) when the launcher
+  preserves argv quoting (cmd.exe, PowerShell direct invocation, shells).
+- **Use a wrapper script on win32** when the launcher cannot preserve
+  quoting: a `.cmd`/`.bat` file whose path has **no spaces**, passed as a
+  single token (`--exec C:\tools\wake-recorder.cmd`). Wrappers also avoid
+  cmd.exe metacharacter quoting entirely.
+- `ab watch` **warns** (never fails) when the exec argv looks split — a
+  trailing positional was detected, or the exec value is a bare REPL binary
+  (`node`, `python`, `powershell`, …) with no arguments — since the action
+  would then run the wrong thing. The warning prints to stderr before the
+  watcher starts; the explicit `--exec` still executes as given.
+
 ## 4. Agents declare wake mechanisms (capabilities)
 
 The heartbeat already carries free-form `capabilities` tags (spec §5.1,

@@ -13,6 +13,7 @@ import {
   defaultGlobalConfigPath,
   LazyResolver,
   resolveConfig,
+  wakeResolveMs,
 } from '../wake-core.js';
 
 const TOKEN = 'wake-plugin-test-token';
@@ -244,6 +245,19 @@ describe('resolveConfig env -> file -> global precedence (sprint 9 T1, #101)', (
       const f = defaultGlobalConfigPath({});
       expect(f).toBe(join(homedir(), '.config', 'agentboard', 'config.json'));
     }
+  });
+});
+
+describe('wakeResolveMs coercion (sprint 10 T2, #110 follow-up)', () => {
+  it('falls back to the default on NaN/invalid values, clamps sub-second values', () => {
+    expect(wakeResolveMs({})).toBe(5000);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: '2500' })).toBe(2500);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: 'abc' })).toBe(5000);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: '0' })).toBe(5000);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: '-5' })).toBe(5000);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: 'Infinity' })).toBe(5000);
+    expect(wakeResolveMs({ AB_WAKE_RESOLVE_MS: '7' }, 9999)).toBe(7);
+    expect(wakeResolveMs({}, 1234)).toBe(1234);
   });
 });
 
