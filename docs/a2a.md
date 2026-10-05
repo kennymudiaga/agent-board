@@ -11,15 +11,22 @@
 |---|---|---|
 | `GET /.well-known/agent.json?agent=<id>` | Agent Card (JSON-LD) for one board agent | none (public discovery) |
 | `GET /a2a/:agentId` | The same card, served at the endpoint URL | none |
-| `POST /a2a/:agentId` | JSON-RPC 2.0: `tasks/send`, `tasks/get`, `tasks/cancel` | **the agent's own per-agent token** (§5.9) |
+| `POST /a2a/:agentId` | JSON-RPC 2.0: `tasks/send`, `tasks/get`, `tasks/cancel`, `tasks/query` | **the agent's own per-agent token** (§5.9) |
+| `GET /a2a/:agentId/events` | SSE task-event stream (created / updated / canceled) | **the agent's own per-agent token** (`?token=` or Authorization header) |
 
 The relay **impersonates the agent with its own token** — the workspace token
 is rejected (`-32001`). No admin escalation, ever. Mint a token with
 `ab token --agent-id <id>` (workspace token required).
 
-Deferred (protocol pre-1.0): `tasks/query`, SSE streaming, registry
-integration. `tasks/send` with a `message` whose `role` is not `user` is
-accepted but stored as-is.
+The task-event stream is scoped to the token's workspace like every other A2A
+surface: one agent token can never observe — by query or by event — another
+workspace's tasks (sprint 8 W4 isolation). EventSource cannot set headers, so
+the stream authenticates via `?token=<agent-token>` (query tokens are accepted
+nowhere else on the JSON-RPC surface; the Authorization header works for
+non-EventSource clients).
+
+Deferred (protocol pre-1.0): registry integration. `tasks/send` with a
+`message` whose `role` is not `user` is accepted but stored as-is.
 
 ## Thread → task mapping
 
@@ -58,6 +65,43 @@ outcome) cannot represent N fan-out deliveries. Requests to a specific
   }
 }
 ```
+
+## tasks/query params
+
+Sprint 10 T4 addition. Lists tasks in the relay agent's workspace (default
+board: the agent's first board), filtered and mapped with the same
+thread→task mapping as `tasks/get`:
+
+```jsonc
+{
+  "board": "sprint-8",   // optional; default: the agent's first board
+  "to": "role:qa",       // optional: agent:<id> | role:<role> (broadcast is rejected)
+  "type": "request",     // optional: "request" | "question"
+  "state": "working",    // optional: submitted | working | completed | failed | canceled
+  "limit": 100           // optional: 1..1000 (default 100)
+}
+```
+
+Returns `{ "tasks": Task[] }` (the same Task shape as `tasks/get`). Filters
+combine with AND. `state: "canceled"` matches nothing on the board — canceled
+tasks are purged, they exist only as stream events.
+
+## SSE task events (`GET /a2a/:agentId/events`)
+
+Sprint 10 T4 addition. An SSE stream of A2A task transitions for tasks that
+**involve this agent**: sent by it (`from`), addressed to it
+(`to: agent:<id>`), or aimed at one of its roles (`to: role:<role>`).
+Broadcasts are not task-shaped and never appear.
+
+```text
+event: hello       data: {"ok":true,"agent":"a2a-1","workspace":"default"}
+event: task        data: {"id":"msg_…","state":"submitted"|"working"|"completed"|"failed"|"canceled","board":"sprint-8"}
+event: ping        data: {"t":…}        (keep-alive every 15s)
+```
+
+Transition sources: `tasks/send` → `submitted`; a board worker pickup →
+`working`; ack `done` → `completed`; ack `failed`/dead-letter/ttl expiry →
+`failed`; requeue → `submitted`; purge (`tasks/cancel`) → `canceled`.
 
 ## Live demo (docs/a2a-demo/demo-client.mjs)
 

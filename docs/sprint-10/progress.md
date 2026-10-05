@@ -9,7 +9,7 @@
 | T1 — session identity sidecar (#109) | **delivered (PR #114); merge pending QA verdict** | **PR [#114](https://github.com/kennymudiaga/agent-board/pull/114)** (branch `feat/session-sidecar-109`, refs #109/#110): T1 acceptance live-proven (`ab session dev` → AB_SESSION_FILE identity, `.agentboard.json` byte-unchanged producer-1); 8 new hermetic tests, suite 198/199 (1 pre-existing archive timeout); `ab setup --check` clean. Conflict vs main resolved by producer (head `525073f`); **CI green**; QA dispatched (#195 qa-1 / #198 / #201), verdict pending. |
 | T2 — CLI hardening bundle (#110 + follow-ups) | **delivered (PR #114); same gate** | shipped alongside T1: win32 `--exec` docs/guard, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` ENOENT friendly error, hermetic tests. |
 | T3 — at-rest encryption (spec §10.7) | **COMPLETE — QA sign-off APPROVE** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, issue #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests, 193/194 full-suite (1 pre-existing archive timeout on baseline); docs/encryption-at-rest.md + spec §10.7. **qa-1 sign-off at `c020049`** (crypto.ts AES-256-GCM/scrypt/abenc1 envelope/no-key pass-through/explicit missing-key error/GCM tamper detection, db.ts keyed paths verified). Merged by producer. |
-| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **in work (dev-361f18)** | #157 claimed; implementation in progress; branch+PR pending |
+| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **delivered (PR #115); awaiting QA sign-off** | **PR [#115](https://github.com/kennymudiaga/agent-board/pull/115)** (`feat/a2a-query-sse`): `tasks/query` + `GET /a2a/:agentId/events` SSE, workspace-scoped; 3 hermetic tests incl. W4 cross-workspace negative; 194/194 suite at push |
 | T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
 
 ## Verification record
@@ -74,6 +74,7 @@
   - Producer sessions are noisy on this sprint (duplicate QA dispatches,
     duplicate approvals) — noted; the T1 sidecar fix targets the underlying
     shared-identity clobbering (#109).
+<<<<<<< HEAD
 - **T3 merged (producer-1, 2026-10-05):** PR #112 QA **PASS** (qa-1,
   consolidated — duplicate dispatches acked, single verdict). Both #112 and
   #114 were `CONFLICTING` vs main (conflict confined to
@@ -87,3 +88,17 @@
   build). crypto.ts (AES-256-GCM, scrypt key, `abenc1:` envelope, no-key
   pass-through, explicit missing-key error, GCM tamper detection) and db.ts
   keyed read/write paths verified. T3 complete: implementation + QA sign-off.
+
+- **T4 — A2A `tasks/query` + SSE (dev-361f18, 2026-10-05):** PR
+  [#115](https://github.com/kennymudiaga/agent-board/pull/115) (`feat/a2a-query-sse`)
+  implements both deferred protocol-1.0 pieces:
+  `tasks/query` (board/to/type/state/limit filters, same thread→task mapping
+  as `tasks/get`) and `GET /a2a/:agentId/events` (SSE created/updated/canceled
+  task events, auth = the agent's per-agent token via `?token=` or header,
+  emit-time workspace scoping). Task events emitted on insert, pickup, ack,
+  requeue, purge (shared `taskEventOf`/`taskStateOf`). Demo client + docs/a2a.md
+  updated. 3 hermetic tests including the **W4 cross-workspace negative test**
+  (workspace B's query sees none of A's tasks; B's stream stays silent while A
+  emits). Full suite 194/194 green at push (archive T5 flaky on this host;
+  passed on the T4 run). Awaiting QA sign-off → producer merge.
+>>>>>>> a23378d (docs: sprint 10 progress - T4 delivered, PR #115 (A2A tasks/query + SSE); suite 194/194)

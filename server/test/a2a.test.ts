@@ -208,7 +208,7 @@ describe('A2A relay (sprint 4 — docs/a2a.md)', () => {
     const noParts = await a2a(app, 'a2a-1', relay, { jsonrpc: '2.0', id: 2, method: 'tasks/send', params: { message: { role: 'user', parts: [] } } });
     expect((await noParts.json()).error.code).toBe(-32602);
 
-    const unknown = await a2a(app, 'a2a-1', relay, { jsonrpc: '2.0', id: 3, method: 'tasks/query', params: {} });
+    const unknown = await a2a(app, 'a2a-1', relay, { jsonrpc: '2.0', id: 3, method: 'tasks/unknown', params: {} });
     expect((await unknown.json()).error.code).toBe(-32601);
 
     const badJson = await app.request('/a2a/a2a-1', {
