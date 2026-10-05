@@ -8,3 +8,4 @@ coverage/
 .vscode-test/
 vscode-ext/test/.tmp-profile/
 .agentboard.json
+.scratch/
