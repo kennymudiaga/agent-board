@@ -6,10 +6,10 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — session identity sidecar (#109) | **dev-1 (reassigned, in work)** | #154 `msg_2b387ed7…`; claims lapsed → dev-361f18 reclaimed (attempts 2) → **producer reassigned back to dev-1** (#177/#180: code delivery beats claim ownership; dev-361f18 standing down, leaving claims to lapse #181). Branch `feat/session-sidecar-109`, T1 coded+tested. |
-| T2 — CLI hardening bundle (#110 + follow-ups) | **dev-1 (reassigned, in work)** | #155 `msg_0b9e7fab…`; same reassignment; next after T1. |
-| T3 — at-rest encryption (spec §10.7) | **delivered (PR #112); QA sign-off in progress** | spike record #163; **PR #112** (branch `feat/encryption-at-rest`, commit `037ad7c`, issue #111); 5 hermetic tests + 195/196 suite (archive failure pre-existing, repro'd on main baseline); **QA dispatched ×3** (#173 qa-8, #174/#176 qa-1); qa-1 actively reviewing (`currentTask` confirms). |
-| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **dev-361f18 (in work)** | #157 `msg_2da3b605…`; standing down on T1/T2, focus T4 (#181); will report branch+PR. |
+| T1 — session identity sidecar (#109) | **in work (dev-1)** | dev-1 holds branch `feat/session-sidecar-109` (T1 coded + tested); claims at #154 (attempts 2, held by dev-361f18 pending lapse → dev-1 redelivery); reassignment confirmed to dev-1 (multiple producer messages) |
+| T2 — CLI hardening bundle (#110 + follow-ups) | **in work (dev-1)** | same branch track; T2 next after T1 (#155, attempts 2) |
+| T3 — at-rest encryption (spec §10.7) | **DELIVERED — QA in progress** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, head `c0200493`, issue #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests, 195/196 (1 pre-existing archive timeout on baseline); docs/encryption-at-rest.md + spec §10.7; conflict with main resolved (head updated 02:05). QA: qa-1 reviewing (crypto.ts/db.ts/index.ts), qa-8 + qa-7b90a9 standby; dispatch duplicated ×4 by overlapping producer sessions (#173/#174/#176/#184) |
+| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **in work (dev-361f18)** | #157 claimed (attempts 2); implementation in progress; branch+PR pending |
 | T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
 
 ## Verification record
@@ -23,6 +23,15 @@
   multi-word quoting gap). Sprint-9 non-blocking follow-ups carried in
   (T2): `AB_WAKE_RESOLVE_MS` NaN, `--log` ENOENT. Plan approved by human;
   T1 + T2 dispatched 2026-10-05.
+- **Coordination (producer-1, 2026-10-05):** spawned worker `dev-361f18`
+  (headless `opencode run --model opencode-go/deepseek-v4-flash`, separate
+  session PID verified, works) claimed T3+T4; dev-1 (separate session,
+  likely human UI) held T1+T2. Claim-ownership churn: dev-1 lapsed
+  (long-turn), dev-361f18 reclaimed (attempts 2), then reassigned back to
+  dev-1 (code delivery beats claim ownership; dev-361f18 standing down,
+  claims lapsing → dev-1 redelivery). **Finding: overlapping producer-1
+  sessions (human UI + woken sessions) all wake on the same mail → duplicate
+  responses (QA dispatch ×4, spike approval ×5) — filed #113.**
 - **T3/T4 assignment + spike (producer-1, 2026-10-05):** dev-361f18 came
   online, claimed T3 (`#156`) + T4 (`#157`) after T1/T2 were taken by
   dev-1; confirmed via board (#160/#161). T3 spike record posted (#163):
