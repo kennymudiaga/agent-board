@@ -19,6 +19,7 @@
  * result) — rejected with -32602 and documented in docs/a2a.md.
  */
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { Hono, type Context } from 'hono';
 import { ID_RE, type MessageRecord, type Store } from './db.js';
 
@@ -103,6 +104,30 @@ function partsFromPayload(payload: unknown): TaskPart[] {
 }
 
 /**
+ * Thread -> A2A task state (docs/a2a.md), shared by `taskFromMessage`,
+ * `tasks/query` and the SSE task-event stream:
+ * `pending` -> submitted · `claimed` -> working · `done` -> completed ·
+ * `dead`/`expired`/`failed` -> failed (message text added at the call site) ·
+ * purged -> canceled (only ever an event — the row is gone).
+ */
+export function taskStateOf(state: MessageRecord['state']): TaskStatus['state'] {
+  switch (state) {
+    case 'pending':
+      return 'submitted';
+    case 'claimed':
+      return 'working';
+    case 'done':
+      return 'completed';
+    case 'dead':
+    case 'expired':
+    case 'failed':
+      return 'failed';
+    default:
+      return 'working';
+  }
+}
+
+/**
  * Thread -> A2A task mapping (docs/a2a.md):
  * `pending` -> submitted · `claimed` -> working · `done` -> completed (the
  * first direct `response` becomes the artifact) · `dead` -> failed (3 failed
@@ -111,28 +136,10 @@ function partsFromPayload(payload: unknown): TaskPart[] {
 function taskFromMessage(store: Store, workspaceId: string, m: MessageRecord, now: number): Task {
   const replies = store.listReplies(workspaceId, m.id, now);
   const response = replies.find((r) => r.type === 'response') ?? replies[0] ?? null;
-  let state: TaskStatus['state'] = 'working';
+  const state = taskStateOf(m.state);
   let message: string | undefined;
-  switch (m.state) {
-    case 'pending':
-      state = 'submitted';
-      break;
-    case 'claimed':
-      state = 'working';
-      break;
-    case 'done':
-      state = 'completed';
-      break;
-    case 'dead':
-      state = 'failed';
-      message = 'dead-lettered after 3 failed attempts';
-      break;
-    case 'expired':
-      state = 'failed';
-      message = m.type === 'question' ? 'question deadline expired' : 'message ttl expired';
-      break;
-    default:
-      state = 'working';
+  if (state === 'failed') {
+    message = m.state === 'dead' ? 'dead-lettered after 3 failed attempts' : m.type === 'question' ? 'question deadline expired' : 'message ttl expired';
   }
   const history: TaskMessage[] = [{ role: 'user', parts: partsFromPayload(m.payload) }];
   const artifacts: Task['artifacts'] = [];
@@ -147,6 +154,23 @@ function taskFromMessage(store: Store, workspaceId: string, m: MessageRecord, no
     ...(history.length ? { history } : {}),
     metadata: { board: m.board, to: m.to },
   };
+}
+
+/**
+ * Task event emitted on board transitions: `{ id, board, state, from, to }`.
+ * The A2A-mapped state lets the SSE stream forward it without re-reading the
+ * thread (a purged/canceled task is gone by the time consumers look it up).
+ */
+export interface TaskEvent {
+  id: string;
+  board: string;
+  state: TaskStatus['state'];
+  from: string;
+  to: string;
+}
+
+export function taskEventOf(m: MessageRecord): TaskEvent {
+  return { id: m.id, board: m.board, state: taskStateOf(m.state), from: m.from, to: m.to };
 }
 
 function parseA2ATo(raw: string): { kind: 'agent' | 'role' | 'broadcast'; value: string | null } | undefined {
@@ -176,7 +200,7 @@ function resolveWorkspace(c: Context, store: Store, fallback: string): string {
   return fallback;
 }
 
-export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, data?: unknown, workspaceId?: string) => void }, fallbackWorkspaceId: string) {
+export function createA2ARoutes(store: Store, mailbox: EventEmitter, fallbackWorkspaceId: string) {
   const app = new Hono();
 
   // Agent Card discovery (public — cards carry no secrets).
@@ -196,6 +220,66 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
     const agentId = c.req.param('agentId');
     if (!ID_RE.test(agentId)) return c.json({ error: { code: 'invalid_agent', message: 'invalid agent id' } }, 400);
     return c.json(cardFor(store, resolveWorkspace(c, store, fallbackWorkspaceId), agentId, originOf(c), Date.now()));
+  });
+
+  // SSE task-event stream (sprint 10 T4, docs/a2a.md): task created / updated /
+  // canceled events for tasks that involve this agent (sent by it, addressed to
+  // it by id, or aimed at one of its roles). Authenticated by the agent's own
+  // per-agent token (spec §5.9) — via `?token=` for EventSource (SSE cannot set
+  // headers) or the Authorization header — and scoped to the token's workspace,
+  // so an agent token can never subscribe to another workspace's task events (W4).
+  app.get('/a2a/:agentId/events', (c) => {
+    const agentId = c.req.param('agentId');
+    if (!ID_RE.test(agentId)) return c.json({ error: { code: 'invalid_agent', message: 'invalid agent id' } }, 400);
+    const queryToken = c.req.query('token');
+    const auth = c.req.header('Authorization');
+    const bearer: string | null = queryToken ?? (auth?.startsWith('Bearer ') ? auth.slice('Bearer '.length) : null);
+    const bound = bearer ? store.tokenAgent(bearer, Date.now()) : null;
+    if (!bound || bound.expired || bound.agentId !== agentId) {
+      return c.json(
+        rpcErr(null, RPC_CODES.UNAUTHORIZED, bound && bound.expired ? 'token expired — mint a new one' : "unauthorized: this agent's per-agent token is required (spec §5.9)"),
+        401,
+      );
+    }
+    const workspaceId = bound.workspaceId;
+    const roles = new Set(store.getAgent(workspaceId, agentId, Date.now())?.roles ?? []);
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false;
+        const send = (event: string, data: unknown) => {
+          if (closed) return; // reader cancelled — no enqueue on a closed controller
+          try {
+            controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            closed = true; // stream closed under us (ERR_INVALID_STATE)
+          }
+        };
+        send('hello', { ok: true, agent: agentId, workspace: workspaceId });
+        const onTask = (ev: TaskEvent, wsId: string) => {
+          if (wsId !== workspaceId) return; // workspace isolation (sprint 8 W4)
+          if (ev.to === 'broadcast') return; // not a task shape
+          const relevant =
+            ev.from === agentId ||
+            ev.to === `agent:${agentId}` ||
+            (ev.to.startsWith('role:') && roles.has(ev.to.slice('role:'.length)));
+          if (relevant) send('task', { id: ev.id, state: ev.state, board: ev.board });
+        };
+        mailbox.on('task', onTask);
+        const ping = setInterval(() => send('ping', { t: Date.now() }), 15_000);
+        c.req.raw.signal.addEventListener('abort', () => {
+          closed = true;
+          mailbox.off('task', onTask);
+          clearInterval(ping);
+          controller.close();
+        });
+      },
+    });
+    return c.body(stream, 200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
   });
 
   // JSON-RPC 2.0 relay — agent-token auth only (§5.9, no admin escalation).
@@ -294,6 +378,8 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
           return c.json(rpcErr(req.id, -32000, 'duplicate task: this idempotencyKey was already used'), 200);
         }
         mailbox.emit('message', board, workspaceId);
+        // Task-event stream (T4): created with the request's initial state.
+        mailbox.emit('task', taskEventOf(result.message), workspaceId);
         return c.json(rpcOk(req.id, taskFromMessage(store, workspaceId, result.message, now)), 200);
       }
 
@@ -314,6 +400,8 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
         // The relay is the sender, so a still-pending request can be purged.
         if (m.state === 'pending' && m.from === agentId) {
           store.deleteMessage(workspaceId, m.id, agentId);
+          // Task-event stream (T4): a purged task is canceled.
+          mailbox.emit('task', { ...taskEventOf(m), state: 'canceled' }, workspaceId);
           return c.json(
             rpcOk(req.id, {
               id: m.id,
@@ -326,6 +414,56 @@ export function createA2ARoutes(store: Store, mailbox: { emit: (event: string, d
           rpcErr(req.id, RPC_CODES.TASK_NOT_CANCELABLE, 'task cannot be canceled: the board request is claimed or finalized (async workers cannot be stopped by the relay)'),
           200,
         );
+      }
+
+      case 'tasks/query': {
+        // Sprint 10 T4: list/filter tasks (docs/a2a.md). The relay's task space
+        // is its own workspace (resolved from the token's agent row) — a token
+        // can never enumerate another workspace's tasks (sprint 8 W4).
+        const agent = store.getAgent(workspaceId, agentId, now);
+        const board = typeof params.board === 'string' && ID_RE.test(params.board) ? params.board : agent?.boards?.[0];
+        if (!board) {
+          return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'no target board: the agent has no boards — pass params.board'), 200);
+        }
+        const toRaw = typeof params.to === 'string' ? params.to : undefined;
+        const to = toRaw ? parseA2ATo(toRaw) : undefined;
+        if (toRaw && !to) {
+          return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'params.to must be agent:<id> or role:<role>'), 200);
+        }
+        if (to?.kind === 'broadcast') {
+          return c.json(
+            rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'broadcast is not a task shape — filter with agent:<id> or role:<role>'),
+            200,
+          );
+        }
+        if (params.type !== undefined && params.type !== 'request' && params.type !== 'question') {
+          return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, "params.type must be 'request' or 'question'"), 200);
+        }
+        const TASK_STATES = ['submitted', 'working', 'completed', 'failed', 'canceled'];
+        if (params.state !== undefined && !TASK_STATES.includes(params.state as string)) {
+          return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, `params.state must be one of: ${TASK_STATES.join(', ')}`), 200);
+        }
+        let limit = 100;
+        if (params.limit !== undefined) {
+          if (!Number.isInteger(params.limit) || (params.limit as number) < 1 || (params.limit as number) > 1000) {
+            return c.json(rpcErr(req.id, RPC_CODES.INVALID_PARAMS, 'params.limit must be an integer in 1..1000'), 200);
+          }
+          limit = params.limit as number;
+        }
+        const state = params.state as TaskStatus['state'] | undefined;
+        const type = params.type as 'request' | 'question' | undefined;
+        const tasks = store
+          .listMessages(workspaceId, board, 0, undefined, now)
+          .filter((m) => {
+            if (m.to === 'broadcast') return false; // not mappable to a task
+            if (toRaw && m.to !== toRaw) return false;
+            if (type && m.type !== type) return false;
+            return true;
+          })
+          .map((m) => taskFromMessage(store, workspaceId, m, now))
+          .filter((t) => (state ? t.status.state === state : true))
+          .slice(0, limit);
+        return c.json(rpcOk(req.id, { tasks }), 200);
       }
 
       default:

@@ -17,7 +17,7 @@ import {
   type Priority,
 } from './db.js';
 import { DASHBOARD_HTML } from './dashboard.js';
-import { createA2ARoutes } from './a2a.js';
+import { createA2ARoutes, taskEventOf } from './a2a.js';
 
 /**
  * AgentBoard reference server — Hono app implementing `docs/spec.md` v0.1.
@@ -476,6 +476,9 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       });
     }
     mailbox.emit('message', board, c.get('workspaceId'));
+    // A2A task-event stream (sprint 10 T4): every board transition is a task
+    // transition for the A2A front door.
+    mailbox.emit('task', taskEventOf(result.message), c.get('workspaceId'));
     return c.json({ message: result.message }, 201);
   });
 
@@ -552,6 +555,8 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       messages = store.claimMessages(c.get('workspaceId'), board, forId, since, Date.now());
     }
     const cursor = messages.length ? messages[messages.length - 1].seq : since;
+    // A2A task-event stream (T4): pickup claims are "working" task updates.
+    for (const m of messages) mailbox.emit('task', taskEventOf(m), c.get('workspaceId'));
     // True watermark (spec §6.2, v0.2): where the client may safely resume.
     // Server-computed so a crashed run's claimed-but-unacked messages still
     // block it (fixes #12 — clients must resume from `watermark`, not `cursor`).
@@ -593,6 +598,7 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
       return error(c, 409, 'ack_conflict', message);
     }
     mailbox.emit('updated', result.message.board, c.get('workspaceId'));
+    mailbox.emit('task', taskEventOf(result.message), c.get('workspaceId'));
     return c.json({ message: result.message }, 200);
   });
 
@@ -606,15 +612,19 @@ export function createApp(store: Store, opts: AppOptions = {}): Hono<{ Variables
     if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can requeue a message');
     if ('wrongState' in result) return error(c, 409, 'state_conflict', 'only dead messages can be requeued');
     mailbox.emit('updated', result.message.board, c.get('workspaceId'));
+    mailbox.emit('task', taskEventOf(result.message), c.get('workspaceId'));
     return c.json({ message: result.message }, 200);
   });
 
   app.delete('/v1/messages/:id', async (c) => {
     const id = c.req.param('id');
     if (!/^msg_[A-Za-z0-9_-]{1,64}$/.test(id)) return error(c, 422, 'unprocessable', 'invalid message id');
+    const before = store.getMessage(c.get('workspaceId'), id);
     const result = store.deleteMessage(c.get('workspaceId'), id, c.get('agentId'));
     if ('notFound' in result) return error(c, 404, 'not_found', `unknown message: ${id}`);
     if ('forbidden' in result) return error(c, 403, 'forbidden', 'only the sender can purge a message');
+    // A2A task-event stream (T4): a purged sender request is a canceled task.
+    if (before) mailbox.emit('task', { ...taskEventOf(before), state: 'canceled' }, c.get('workspaceId'));
     return c.json({ ok: true, deleted: id }, 200);
   });
 
