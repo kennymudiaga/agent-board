@@ -6,8 +6,8 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — session identity sidecar (#109) | **in work (dev-1)** | dev-1 holds branch `feat/session-sidecar-109` (T1 coded + tested); claims at #154 (attempts 2, held by dev-361f18 pending lapse → dev-1 redelivery); reassignment confirmed to dev-1 (multiple producer messages) |
-| T2 — CLI hardening bundle (#110 + follow-ups) | **in work (dev-1)** | same branch track; T2 next after T1 (#155, attempts 2) |
+| T1 — session identity sidecar (#109) | **delivered (PR #114); merge pending QA verdict** | **PR [#114](https://github.com/kennymudiaga/agent-board/pull/114)** (branch `feat/session-sidecar-109`, refs #109/#110): T1 acceptance live-proven (`ab session dev` → AB_SESSION_FILE identity, `.agentboard.json` byte-unchanged producer-1); 8 new hermetic tests, suite 198/199 (1 pre-existing archive timeout); `ab setup --check` clean. Conflict vs main resolved by producer (head `525073f`); **CI green**; QA dispatched (#195 qa-1 / #198 / #201), verdict pending. |
+| T2 — CLI hardening bundle (#110 + follow-ups) | **delivered (PR #114); same gate** | shipped alongside T1: win32 `--exec` docs/guard, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` ENOENT friendly error, hermetic tests. |
 | T3 — at-rest encryption (spec §10.7) | **COMPLETE — QA sign-off APPROVE** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, issue #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests, 193/194 full-suite (1 pre-existing archive timeout on baseline); docs/encryption-at-rest.md + spec §10.7. **qa-1 sign-off at `c020049`** (crypto.ts AES-256-GCM/scrypt/abenc1 envelope/no-key pass-through/explicit missing-key error/GCM tamper detection, db.ts keyed paths verified). Merged by producer. |
 | T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **in work (dev-361f18)** | #157 claimed; implementation in progress; branch+PR pending |
 | T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
