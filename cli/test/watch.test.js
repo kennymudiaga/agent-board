@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Store } from '../../server/src/db.ts';
 import { createApp } from '../../server/src/app.ts';
+import { execSplitWarnings } from '../src/watch.js';
 
 const TOKEN = 'watch-test-token';
 const CLI = resolve(import.meta.dirname, '..', 'bin', 'ab.js');
@@ -192,5 +193,50 @@ describe('ab watch — wake-on-mail daemon (sprint 5 T1)', () => {
     expect(noBoard.code).not.toBe(0);
     expect(noBoard.stderr).toContain('--board');
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  // --- sprint 10 T2 (issue #110): win32 --exec split guard -------------------
+
+  it('warns when --exec was split by the launcher (trailing positional / bare REPL)', async () => {
+    const dir = makeWorkspace();
+    const run = (args) =>
+      new Promise((res) => {
+        // Unreachable server: the warning prints before the (failing) prime.
+        execFile(process.execPath, [CLI, 'watch', ...args], { cwd: dir, env: { ...process.env, AB_SERVER: 'http://127.0.0.1:1', AB_TOKEN: TOKEN, AB_AGENT_ID: 'watch-1' } }, (err, stdout, stderr) =>
+          res({ code: err?.code ?? 0, stderr }),
+        );
+      });
+    // A launcher that re-joins argv with spaces: `--exec node` + a positional.
+    const split = await run(['--board', 'watch-b4', '--exec', 'node', 'C:\\tools\\recorder.cjs', '--once']);
+    expect(split.code).not.toBe(0);
+    expect(split.stderr).toContain('was split');
+    expect(split.stderr).toContain('recorder.cjs');
+    // A bare REPL binary with no arguments also warns.
+    const bare = await run(['--board', 'watch-b4', '--exec', 'node', '--once']);
+    expect(bare.code).not.toBe(0);
+    expect(bare.stderr).toContain('bare node');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('execSplitWarnings (sprint 10 T2, issue #110)', () => {
+  it('flags a split exec (trailing positionals) and bare REPL binaries', () => {
+    const split = execSplitWarnings('node', ['C:\\tools\\recorder.cjs']);
+    expect(split).toHaveLength(1);
+    expect(split[0]).toContain('was split');
+    expect(split[0]).toContain('recorder.cjs');
+    const bare = execSplitWarnings('node', []);
+    expect(bare[0]).toContain('bare node');
+    expect(execSplitWarnings('python', [])).toHaveLength(1);
+    expect(execSplitWarnings('powershell.exe', [])).toHaveLength(1);
+    expect(execSplitWarnings(undefined, ['x'])).toEqual([]);
+    expect(execSplitWarnings(undefined, [])).toEqual([]);
+  });
+
+  it('stays silent for well-formed single-token exec commands', () => {
+    expect(execSplitWarnings('node script.cjs', [])).toEqual([]);
+    expect(execSplitWarnings('C:\\tools\\wake.cmd', [])).toEqual([]);
+    expect(execSplitWarnings('true', [])).toEqual([]); // legit no-op guard
+    expect(execSplitWarnings('opencode run --agent board-worker', [])).toEqual([]);
   });
 });

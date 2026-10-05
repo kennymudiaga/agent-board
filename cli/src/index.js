@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { CliError } from './api.js';
-import { cmdInit, cmdJoin, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
+import { cmdInit, cmdJoin, cmdSession, cmdHeartbeat, cmdSend, cmdRead, cmdAck, cmdDead, cmdRequeue, cmdPurge, cmdArchive, cmdToken, cmdWhoami, cmdAgents, cmdSpawn } from './commands.js';
 import { cmdWatch } from './watch.js';
 import { cmdSetup } from './setup.js';
 
@@ -24,6 +24,12 @@ commands:
              --workspace <id>: optional multi-workspace hint (sent only when set; #87)
   join       register board membership
              ab join --board <name> [--board <name2>]
+  session    session identity sidecar (issue #109) — a "/ab join <board> as dev" that does NOT
+             clobber the workspace identity on a shared checkout
+             ab session dev [--board sprint-8] [--roles dev] [--delete]
+               writes .agentboard.dev-1.json (server/token copied, agentId/roles overridden);
+               .agentboard.json keeps the checkout identity. Resolve it for the session with
+               AB_SESSION_FILE=.agentboard.dev-1.json (env-scoped: one session, one pointer)
   heartbeat  register + check in (loop)
              ab heartbeat --interval <sec> [--status idle|busy] [--task <text>] [--board <name>] [--capabilities a,b] [--once]
   send       drop a message
@@ -62,6 +68,8 @@ commands:
              ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
              [--notify] [--once] [--interval <sec>] [--since <seq>]
              read-only (never claims/acks); message data passes to --exec via AB_WATCH_* env only
+             --exec is ONE shell-invoked token: quote multi-word commands ("node script.cjs"); on
+             win32 use a wrapper (.cmd/.bat, no spaces in the path) — launchers can split it (#110)
   setup      install the bundled agent/skill/command templates (single source of truth)
              ab setup [--host opencode|claude|vscode|all]   workspace install (generated copies)
              ab setup --global [--host ...]                 user-level install (once per machine)
@@ -72,7 +80,7 @@ global options:
   --json     machine-readable JSON on stdout
   --help     show this help
 
-env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_ROLES (comma-separated), AB_WORKSPACE, AB_BOARDS (comma-separated)
+env overrides: AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_ROLES (comma-separated), AB_WORKSPACE, AB_BOARDS (comma-separated), AB_SESSION_FILE (issue #109: per-session identity sidecar, .agentboard.<id>.json)
 config file:  .agentboard.json in the workspace directory (overrides the global config)
 global file:  %APPDATA%\\agentboard\\config.json (win32) | ~/.config/agentboard/config.json (posix)
               written once per machine with 'ab init --global' — tokens never leave it`;
@@ -121,6 +129,7 @@ function parseArgs(args) {
 const COMMANDS = {
   init: cmdInit,
   join: cmdJoin,
+  session: cmdSession,
   heartbeat: cmdHeartbeat,
   send: cmdSend,
   read: cmdRead,

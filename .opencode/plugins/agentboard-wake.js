@@ -29,7 +29,7 @@
  * loader invokes every exported function of a plugins-dir module as a plugin.
  */
 
-import { createWakeController } from '../lib/wake-core.js';
+import { createWakeController, wakeResolveMs } from '../lib/wake-core.js';
 
 export const agentboardWake = async (input) => {
   const { client, directory } = input;
@@ -41,13 +41,13 @@ export const agentboardWake = async (input) => {
       .catch(() => {});
   };
 
-  // Lazy binding (#101): re-resolve on a ~5s loop (AB_WAKE_RESOLVE_MS); the
-  // watcher starts/restarts only when server/token/agentId/board change.
+// Lazy binding (#101): re-resolve on a ~5s loop (AB_WAKE_RESOLVE_MS — NaN-
+  // coerced, #110 follow-up: a non-numeric value must fall back, not spin).
   const controller = createWakeController({
     client,
     directory,
     log,
-    intervalMs: Number(process.env.AB_WAKE_RESOLVE_MS ?? 5000),
+    intervalMs: wakeResolveMs(),
   });
   controller.start();
   return {};

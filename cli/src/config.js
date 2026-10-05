@@ -2,8 +2,17 @@
  * Workspace config for the `ab` CLI. Stored as `.agentboard.json` in the
  * workspace directory (cwd). Env vars override file values:
  *   AB_SERVER, AB_TOKEN, AB_AGENT_ID, AB_WORKSPACE, AB_BOARDS
- * Resolution order (issue #41): env vars > `.agentboard.json` in cwd >
- * machine-wide global config (`ab init --global`).
+ * Resolution order (issue #41): env vars > session sidecar (issue #109,
+ * `AB_SESSION_FILE` — `.agentboard.<id>.json` written by `ab session`) >
+ * `.agentboard.json` in cwd > machine-wide global config (`ab init --global`).
+ *
+ * The session sidecar (issue #109): `/ab join <board> as <role>` must never
+ * clobber the workspace identity on a shared checkout. `ab session <role>`
+ * writes a per-session identity file that the session resolves through
+ * `AB_SESSION_FILE` — the workspace `.agentboard.json` keeps its deliberate
+ * identity untouched, and saveConfig never persists a session identity into
+ * it (same class as #25/#26/#41/#58: identity follows the session, not the
+ * checkout).
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -44,6 +53,26 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
       throw new CliError(`${path} is not valid JSON`);
     }
   }
+  // Session identity sidecar (issue #109): `ab session <role>` writes
+  // `.agentboard.<id>.json`; the session resolves it via AB_SESSION_FILE
+  // (env-scoped by definition — one session, one pointer). Precedence sits
+  // between the AB_* env overrides and the workspace file.
+  let session = {};
+  let sessionPath = null;
+  const sessionActive = process.env.AB_SESSION_FILE !== undefined;
+  if (sessionActive) {
+    sessionPath = resolve(cwd, process.env.AB_SESSION_FILE);
+    if (!existsSync(sessionPath)) {
+      throw new CliError(
+        `${sessionPath} does not exist (AB_SESSION_FILE) — create it with \`ab session <role>\` or point AB_SESSION_FILE at an existing sidecar`,
+      );
+    }
+    try {
+      session = JSON.parse(readFileSync(sessionPath, 'utf8'));
+    } catch {
+      throw new CliError(`${sessionPath} (AB_SESSION_FILE) is not valid JSON`);
+    }
+  }
   const gpath = globalConfigPath();
   let global = {};
   let globalExisted = false;
@@ -56,7 +85,7 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     }
   }
   const envTrio = Boolean(process.env.AB_SERVER && process.env.AB_TOKEN && process.env.AB_AGENT_ID);
-  if (requireFile && !existed && !envTrio && !globalExisted) {
+  if (requireFile && !existed && !envTrio && !sessionActive && !globalExisted) {
     throw new CliError(`no ${CONFIG_FILE} in ${cwd} — run \`ab init\` first`);
   }
   const envRoles = process.env.AB_ROLES !== undefined ? parseList(process.env.AB_ROLES) : null;
@@ -65,10 +94,15 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
   // the file. Comma-separated, same grammar as `ab join --board a --board b`.
   const envBoards = process.env.AB_BOARDS !== undefined ? parseList(process.env.AB_BOARDS) : null;
   const envAny = process.env.AB_SERVER !== undefined || process.env.AB_TOKEN !== undefined || process.env.AB_AGENT_ID !== undefined || process.env.AB_ROLES !== undefined;
+  // Issue #109: a session identity (AB_SESSION_FILE) must NEVER inherit the
+  // local file's cursors either — same class as #67 (env identities start
+  // fresh); its boards still come from the operational state like any session.
+  const sessionAny = envAny || sessionActive;
   return {
     path,
     globalPath: gpath,
-    source: envAny ? 'env' : existed ? 'local' : globalExisted ? 'global' : 'none',
+    sessionPath,
+    source: envAny ? 'env' : sessionActive ? 'session' : existed ? 'local' : globalExisted ? 'global' : 'none',
     fromEnv: !existed,
     // A token that came from the environment must never be written to disk
     // (issue #25): env-only identities stay env-only. But a token the user
@@ -78,10 +112,10 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
     tokenFromEnv: process.env.AB_TOKEN !== undefined,
     tokenFromGlobal: process.env.AB_TOKEN === undefined && typeof file.token !== 'string' && typeof global.token === 'string',
     fileToken: typeof file.token === 'string' ? file.token : undefined,
-    // The identity fields as stored in the LOCAL file (before env/global
-    // overrides). saveConfig persists exactly these — a session whose identity
-    // came from env (e.g. an `ab spawn` worker sharing the spawner's cwd) must
-    // never clobber the workspace's deliberate identity with its own.
+    // The identity fields as stored in the LOCAL file (before env/session/
+    // global overrides). saveConfig persists exactly these — a session whose
+    // identity came from env or a sidecar (e.g. `ab session dev` on a shared
+    // checkout) must never clobber the workspace's deliberate identity.
     fileValues: {
       server: typeof file.server === 'string' ? file.server : undefined,
       token: typeof file.token === 'string' ? file.token : undefined,
@@ -91,21 +125,22 @@ export function loadConfig(cwd = process.cwd(), { requireFile = true } = {}) {
       workspace: typeof file.workspace === 'string' ? file.workspace : undefined,
       spawn: file.spawn && typeof file.spawn === 'object' ? file.spawn : undefined,
     },
-    server: process.env.AB_SERVER ?? file.server ?? global.server,
-    token: process.env.AB_TOKEN ?? file.token ?? global.token,
-    agentId: process.env.AB_AGENT_ID ?? file.agentId ?? global.agentId,
-    // Workspace hint (sprint 8 T5, #87): env > file > global. The CLI sends
-    // it only when set; single-workspace servers ignore it.
-    workspace: process.env.AB_WORKSPACE ?? file.workspace ?? global.workspace,
-    provider: file.provider ?? global.provider ?? null,
-    roles: envRoles ?? (Array.isArray(file.roles) ? file.roles : Array.isArray(global.roles) ? global.roles : []),
+    server: process.env.AB_SERVER ?? session.server ?? file.server ?? global.server,
+    token: process.env.AB_TOKEN ?? session.token ?? file.token ?? global.token,
+    agentId: process.env.AB_AGENT_ID ?? session.agentId ?? file.agentId ?? global.agentId,
+    // Workspace hint (sprint 8 T5, #87): env > session > file > global. The CLI
+    // sends it only when set; single-workspace servers ignore it.
+    workspace: process.env.AB_WORKSPACE ?? session.workspace ?? file.workspace ?? global.workspace,
+    provider: session.provider ?? file.provider ?? global.provider ?? null,
+    roles: envRoles ?? (Array.isArray(session.roles) ? session.roles : Array.isArray(file.roles) ? file.roles : Array.isArray(global.roles) ? global.roles : []),
     boards: envBoards ?? (Array.isArray(file.boards) ? file.boards : Array.isArray(global.boards) ? global.boards : []),
-    // #67: an env-identity session (e.g. an `ab spawn` child sharing the
-    // spawner's cwd) must NEVER inherit the file's cursors — they are the
-    // file identity's per-reader watermarks and can sit far ahead of what a
-    // fresh worker has seen, silently skipping pending mail. Env identities
-    // start from a fresh cursor (first read `since 0`), same class as #58.
-    cursors: envAny
+    // #67: an env- or session-identity (e.g. an `ab spawn` child or `ab
+    // session` sidecar sharing the workspace cwd) must NEVER inherit the
+    // file's cursors — they are the file identity's per-reader watermarks and
+    // can sit far ahead of what a fresh worker has seen, silently skipping
+    // pending mail. They start from a fresh cursor (first read `since 0`),
+    // same class as #58.
+    cursors: sessionAny
       ? {}
       : file.cursors && typeof file.cursors === 'object'
         ? file.cursors

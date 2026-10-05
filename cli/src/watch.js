@@ -27,6 +27,37 @@ import { loadConfig } from './config.js';
 
 const OPENCODE_SERVER = process.env.AB_OPENCODE_SERVER ?? 'http://127.0.0.1:4096';
 
+/**
+ * win32 `--exec` split guard (issue #110): a launcher that does not preserve
+ * quoting (e.g. Start-Process -ArgumentList joins tokens with spaces) splits
+ * `--exec "node script.cjs"` into `--exec node` + a trailing positional — the
+ * watcher then fires a bare REPL binary instead of the intended command.
+ * Warn (never fail): trailing positionals mean the exec argv was split, and a
+ * bare REPL-style binary with no arguments would hang the action on a REPL.
+ */
+const REPL_BINARIES = new Set(['node', 'node.exe', 'python', 'python3', 'powershell', 'powershell.exe', 'pwsh', 'cmd', 'cmd.exe', 'bash', 'sh', 'csh', 'zsh']);
+
+export function execSplitWarnings(exec, positionals, platform = process.platform) {
+  const warnings = [];
+  if (exec !== undefined && positionals.length > 0) {
+    warnings.push(
+      `--exec was split: the trailing argument(s) [${positionals.join(' ')}] would be ignored — ` +
+        '--exec must be ONE shell-invoked token; quote the whole command or use a wrapper ' +
+        `(.cmd/.bat, path without spaces) so the launcher cannot re-split it (${platform === 'win32' ? 'win32' : 'this platform'})`,
+    );
+  }
+  if (exec !== undefined && !/\s/.test(exec) && !/[/\\]/.test(exec)) {
+    const base = String(exec).toLowerCase();
+    if (REPL_BINARIES.has(base) && positionals.length === 0) {
+      warnings.push(
+        `--exec "${exec}" is a bare ${base} with no arguments — it would start an interactive REPL and hang; ` +
+          'if you intended a multi-word command the launcher may have split it (win32: quote it as ONE token or use a wrapper)',
+      );
+    }
+  }
+  return warnings;
+}
+
 function usage(msg, hint) {
   throw new CliError(msg ? `${msg}\n${hint}` : hint);
 }
@@ -100,7 +131,13 @@ export async function cmdWatch(flags, json) {
   const forId = flags.for ?? cfg.agentId;
   if (!forId || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(forId)) usage(`invalid --for agent id: ${forId}`);
   if (flags.exec === undefined && flags.opencode === undefined && !flags.notify) {
-    usage('watch requires at least one action: --exec <cmd>, --opencode <session-id>, or --notify');
+    usage('watch requires at least one action: --exec <cmd>, --opencode <session-id>, or --notify', 'ab watch --board sprint-8 [--for qa-1] [--exec <cmd>] [--opencode <session-id>] [--notify] [--once]\n  --exec is ONE shell-invoked token — quote multi-word commands (--exec "node script.cjs"); on win32 use a wrapper (.cmd/.bat, no spaces in the path) so launchers cannot split it (issue #110)');
+  }
+  // #110: warn when the exec argv looks split (trailing positionals, or a
+  // bare REPL binary) — the action would run the wrong thing. Warn only;
+  // the user's explicit --exec still executes.
+  for (const w of execSplitWarnings(flags.exec, flags._)) {
+    process.stderr.write(`[watch] warning: ${w}\n`);
   }
   const interval = flags.interval === undefined ? 5 : Number(flags.interval);
   if (!Number.isInteger(interval) || interval < 1 || interval > 3600) usage('--interval must be an integer in 1..3600');

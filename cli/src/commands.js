@@ -3,7 +3,7 @@
  * Every command accepts `json` (--json) for machine-readable stdout.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
@@ -70,12 +70,11 @@ export async function cmdInit(flags, json) {
 
 // ------------------------------------------------------------------ join
 
-export async function cmdJoin(flags, json) {
-  if (flags.board === undefined) usage('join requires --board', 'ab join --board sprint-7 [--board feature-x]');
-  const cfg = loadConfig();
+/** Shared join core: add boards to a config and persist (used by cmdJoin + cmdSession). */
+export function doJoin(cfg, boardSpec) {
   const added = [];
   const BOARD_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-  for (const board of parseList(flags.board)) {
+  for (const board of parseList(boardSpec)) {
     if (!BOARD_RE.test(board)) usage(`invalid board name: ${board} (must match ^[a-z0-9][a-z0-9._-]{0,63}$)`);
     if (!cfg.boards.includes(board)) {
       cfg.boards.push(board);
@@ -83,6 +82,13 @@ export async function cmdJoin(flags, json) {
     }
   }
   saveConfig(cfg);
+  return added;
+}
+
+export async function cmdJoin(flags, json) {
+  if (flags.board === undefined) usage('join requires --board', 'ab join --board sprint-7 [--board feature-x]');
+  const cfg = loadConfig();
+  const added = doJoin(cfg, flags.board);
   if (json) {
     console.log(JSON.stringify({ ok: true, boards: cfg.boards, added }));
   } else if (added.length === 0) {
@@ -90,6 +96,96 @@ export async function cmdJoin(flags, json) {
   } else {
     console.log(`joined ${added.join(', ')} — boards: ${cfg.boards.join(', ')}`);
   }
+}
+
+// ------------------------------------------------------------------ session (issue #109)
+
+const SESSION_SUFFIX = '.json';
+
+/** `as <role>` -> `<role>-1` (e.g. dev -> dev-1); explicit agent ids (`qa-1`, `dev-3f9a2c`) pass through. */
+export function sessionAgentId(want) {
+  const id = String(want);
+  return /-\d/.test(id) ? id : `${id}-1`;
+}
+
+/** The session sidecar path for an agent id in a workspace: `.agentboard.<id>.json`. */
+export function sessionPathFor(cwd, agentId) {
+  return resolve(cwd, `.agentboard.${agentId}${SESSION_SUFFIX}`);
+}
+
+/**
+ * `ab session <role> [--board <b>] [--roles a,b] [--provider <n>] [--delete]`
+ * (issue #109): writes a per-session identity sidecar (`.agentboard.<id>.json`)
+ * copying the resolved server/token and overriding agentId/roles — the
+ * workspace identity (`.agentboard.json`) is left untouched, so `/ab join
+ * <board> as dev` on a shared checkout can never clobber the producer. The
+ * session resolves the sidecar through `AB_SESSION_FILE` (env-scoped: one
+ * session, one pointer). `--board` joins for the session immediately.
+ */
+export async function cmdSession(flags, json) {
+  const want = flags.role ?? flags._[0];
+  if (!want) {
+    usage(
+      'session requires a role or agent id',
+      'ab session dev [--board sprint-8] [--roles dev] [--delete]\n  writes .agentboard.dev-1.json — the workspace identity stays untouched',
+    );
+  }
+  const agentId = sessionAgentId(want);
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(agentId)) usage(`invalid agent id: ${agentId} (must match ^[a-z0-9][a-z0-9._-]{0,63}$)`);
+  const cwd = process.cwd();
+  const sidecar = sessionPathFor(cwd, agentId);
+
+  if (flags.delete) {
+    if (existsSync(sidecar)) {
+      rmSync(sidecar, { force: true });
+      console.log(`removed session identity ${sidecar}`);
+    } else {
+      console.log(`no session identity at ${sidecar}`);
+    }
+    return;
+  }
+
+  // Copy the RESOLVED identity (env/file/global) for server/token, then
+  // override agentId/roles with the requested session identity.
+  const cfg = loadConfig(cwd, { requireFile: false });
+  if (!cfg.server || !cfg.token) {
+    usage(
+      'session needs an identity to copy server/token from — run `ab init` first (or set AB_SERVER/AB_TOKEN)',
+      'ab init --server http://localhost:8080 --token <workspace-token> [--agent-id producer-1] [--roles producer]',
+    );
+  }
+  const roles = flags.roles !== undefined ? parseList(flags.roles) : /-\d/.test(String(want)) ? cfg.roles : [String(want)];
+  const session = {
+    server: cfg.server,
+    token: cfg.token,
+    agentId,
+    provider: flags.provider ?? cfg.provider ?? null,
+    roles,
+    ...(cfg.workspace ? { workspace: cfg.workspace } : {}),
+  };
+  writeFileSync(sidecar, `${JSON.stringify(session, null, 2)}\n`);
+
+  // `--board` joins for the SESSION: resolve through the fresh sidecar so the
+  // join persists under the session's operational state, never the workspace
+  // identity's.
+  if (flags.board !== undefined) {
+    process.env.AB_SESSION_FILE = sidecar;
+    const sessionCfg = loadConfig(cwd);
+    const added = doJoin(sessionCfg, flags.board);
+    if (json) {
+      console.log(JSON.stringify({ ok: true, sidecar, agentId, roles, boards: sessionCfg.boards, added }));
+      return;
+    }
+    if (added.length > 0) console.log(`joined ${added.join(', ')}`);
+  } else if (json) {
+    console.log(JSON.stringify({ ok: true, sidecar, agentId, roles }));
+    return;
+  }
+
+  console.log(`session identity ${agentId} [${roles.join(', ')}] → ${sidecar}`);
+  console.log(`  workspace identity untouched: ${cfg.path} still owns the checkout identity`);
+  console.log(`  use it: export AB_SESSION_FILE=${sidecar}`);
+  console.log(`          (or prefix every ab call: AB_SESSION_FILE=${sidecar} ab whoami)`);
 }
 
 // ------------------------------------------------------------------ heartbeat
@@ -412,6 +508,7 @@ export async function cmdWhoami(flags, json) {
   const cfg = loadConfig(process.cwd(), { requireFile: false });
   const sourceText = {
     env: 'env (AB_SERVER / AB_TOKEN / AB_AGENT_ID)',
+    session: `session (AB_SESSION_FILE → ${cfg.sessionPath})`,
     local: cfg.path,
     global: `global ${cfg.globalPath}`,
     none: 'none',
@@ -425,6 +522,7 @@ export async function cmdWhoami(flags, json) {
     // #87: resolved workspace hint (undefined on single-workspace setups).
     workspace: cfg.workspace,
     source: cfg.source,
+    sessionFile: cfg.sessionPath ?? null,
     configFile: existsSync(cfg.path),
     env: {
       server: process.env.AB_SERVER !== undefined,
@@ -433,6 +531,7 @@ export async function cmdWhoami(flags, json) {
       roles: process.env.AB_ROLES !== undefined,
       workspace: process.env.AB_WORKSPACE !== undefined,
       boards: process.env.AB_BOARDS !== undefined,
+      session: process.env.AB_SESSION_FILE !== undefined,
     },
   };
   if (json) {
@@ -446,7 +545,7 @@ export async function cmdWhoami(flags, json) {
     if (info.workspace !== undefined) console.log(`workspace: ${info.workspace}`);
     console.log(`source  : ${cfg.source}`);
     console.log(`config  : ${sourceText}`);
-    console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles} workspace=${info.env.workspace} boards=${info.env.boards}`);
+    console.log(`env     : server=${info.env.server} token=${info.env.token} agentId=${info.env.agentId} roles=${info.env.roles} workspace=${info.env.workspace} boards=${info.env.boards} session=${info.env.session}`);
   }
 }
 
@@ -753,6 +852,18 @@ export async function cmdSpawn(flags, json) {
   const logFile = flags.log !== undefined ? String(flags.log) : null;
   if (logFile !== null && existsSync(logFile) && statSync(logFile).isDirectory()) {
     usage(`--log must be a file path, not a directory: ${logFile}`);
+  }
+  // Sprint 9 follow-up (#110 bundle): a missing parent directory used to blow
+  // up as a raw ENOENT from openSync (posix) or a silent shell-redirect
+  // failure (win32). Surface it as a friendly error up front.
+  if (logFile !== null) {
+    const logParent = dirname(resolve(logFile));
+    if (!existsSync(logParent)) {
+      usage(
+        `--log parent directory does not exist: ${logParent}\n` +
+          '  fix: create the directory first, or use a path inside an existing directory',
+      );
+    }
   }
 
   // OpenCode's `--file` is a yargs *array* option — it consumes every token

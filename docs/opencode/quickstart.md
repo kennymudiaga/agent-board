@@ -53,15 +53,16 @@ ab join --board sprint-7
 **Session B — QA** (same repo, second terminal):
 
 ```bash
-ab init --server http://localhost:8080 --token dev-token --agent-id qa-1 --roles qa --provider opencode
-ab join --board sprint-7
+ab session qa --board sprint-7          # writes .agentboard.qa-1.json (workspace identity untouched)
+export AB_SESSION_FILE=.agentboard.qa-1.json
 ```
 
-> Two identities share one workspace config file, so run the two `ab init`s
-> in different terminals only if you want to overwrite each other — simplest
-> is: init once per session *just before* using that session, or give the QA
-> agent its own directory. For the demo below, configure the producer in the
-> producer session, then re-init as the QA agent in the QA session.
+> Two identities share one checkout without ping-pong-clobbering each other
+> (issue #109): the workspace identity lives in `.agentboard.json` (the
+> producer); every other session uses a **session identity** sidecar
+> (`.agentboard.<id>.json` via `ab session <role>`, resolved with
+> `AB_SESSION_FILE` — or the raw `AB_SERVER`/`AB_TOKEN`/`AB_AGENT_ID`/
+> `AB_ROLES` env overrides). Nothing ever rewrites the producer's file.
 
 ## 4. Start the board loops (Session B, QA side)
 
