@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { makePayloadCipher, type PayloadCipher } from './crypto.js';
 
 /**
  * Storage layer for the AgentBoard reference server.
@@ -326,7 +327,7 @@ function aggregateReads(deliveries: DeliveryRecord[]): BroadcastReads {
   return reads;
 }
 
-function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveries?: DeliveryRecord[] }): MessageRecord {
+function toMessage(r: MessageRow, cipher: PayloadCipher, extras?: { delivery?: DeliveryRecord; deliveries?: DeliveryRecord[] }): MessageRecord {
   const deliveries = extras?.deliveries;
   return {
     id: r.id,
@@ -335,7 +336,12 @@ function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveri
     from: r.from_agent,
     to: r.to_kind === 'broadcast' ? 'broadcast' : `${r.to_kind}:${r.to_value}`,
     type: r.type as MsgType,
-    payload: JSON.parse(r.payload),
+    // At-rest payload decryption (sprint 10 T3, #111): the cipher decrypts
+    // `abenc1:` envelopes transparently; plaintext cells (legacy rows, or a
+    // deployment without a key) pass through untouched. A missing key on an
+    // encrypted envelope throws a clear error from the cipher instead of a
+    // JSON.parse crash.
+    payload: JSON.parse(cipher.decrypt(r.payload)),
     priority: r.priority as Priority,
     ttl: r.ttl,
     deadline: r.deadline !== null && r.deadline !== undefined ? new Date(r.deadline).toISOString() : null,
@@ -355,10 +361,18 @@ function toMessage(r: MessageRow, extras?: { delivery?: DeliveryRecord; deliveri
 
 export class Store {
   readonly db: Database.Database;
+  private readonly cipher: PayloadCipher;
 
-  constructor(path: string) {
+  constructor(path: string, cipher?: PayloadCipher) {
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
+    // At-rest payload encryption (sprint 10 T3, #111): the default cipher is
+    // the transport-only plaintext pass-through; index.ts injects the
+    // AB_ENCRYPTION_KEY-backed cipher when the operator opted in. Encryption
+    // and decryption happen at the payload-cell boundary below, so every
+    // reader (pickup, observability, replies, A2A relay, dashboard) sees
+    // decrypted payloads transparently.
+    this.cipher = cipher ?? makePayloadCipher(undefined);
     this.db.exec(SCHEMA);
     // Lightweight migrations for pre-v0.2 databases (CREATE TABLE IF NOT
     // EXISTS does not add columns to existing tables).
@@ -705,7 +719,7 @@ export class Store {
         )
         .run(
           id, workspaceId, input.board, seq, input.from, input.toKind, input.toValue, input.type,
-          JSON.stringify(input.payload), input.priority, input.ttl, input.deadline, late,
+          this.cipher.encrypt(JSON.stringify(input.payload)), input.priority, input.ttl, input.deadline, late,
           input.idempotencyKey, input.replyTo, now, now,
         );
       // Broadcast fan-out (v0.2): one delivery row per current board member —
@@ -730,7 +744,7 @@ export class Store {
           this.db.prepare("UPDATE messages SET state = 'dead', updated_at = ? WHERE id = ?").run(now, id);
         }
       }
-      return { message: toMessage(this.getRow(workspaceId, id)!, { deliveries: this.deliveriesFor(id) }) };
+      return { message: toMessage(this.getRow(workspaceId, id)!, this.cipher, { deliveries: this.deliveriesFor(id) }) };
     });
     const result = tx();
     if (result.duplicate) return { duplicate: result.duplicate };
@@ -781,7 +795,7 @@ export class Store {
         .prepare(`SELECT * FROM messages WHERE id IN (${placeholders}) ORDER BY seq ASC`)
         .all(...rows.map((r) => r.id)) as MessageRow[];
       return fresh.map((r) =>
-        toMessage(r, {
+        toMessage(r, this.cipher, {
           ...(r.to_kind === 'broadcast' ? { delivery: this.deliveryFor(r.id, forAgent)! } : {}),
         }),
       );
@@ -799,7 +813,7 @@ export class Store {
       : (this.db
           .prepare('SELECT * FROM messages WHERE workspace_id = ? AND board = ? AND seq > ? ORDER BY seq ASC')
           .all(workspaceId, board, since) as MessageRow[]);
-    return rows.map((r) => toMessage(r, { ...(r.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(r.id) } : {}) }));
+    return rows.map((r) => toMessage(r, this.cipher, { ...(r.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(r.id) } : {}) }));
   }
 
   /**
@@ -842,7 +856,7 @@ export class Store {
   getMessage(workspaceId: string, id: string): MessageRecord | undefined {
     const row = this.getRow(workspaceId, id);
     return row
-      ? toMessage(row, { ...(row.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(id) } : {}) })
+      ? toMessage(row, this.cipher, { ...(row.to_kind === 'broadcast' ? { deliveries: this.deliveriesFor(id) } : {}) })
       : undefined;
   }
 
@@ -858,7 +872,7 @@ export class Store {
     const rows = this.db
       .prepare('SELECT * FROM messages WHERE reply_to = ? AND workspace_id = ? ORDER BY seq ASC')
       .all(messageId, workspaceId) as MessageRow[];
-    return rows.map((r) => toMessage(r));
+    return rows.map((r) => toMessage(r, this.cipher));
   }
 
   /**
@@ -896,7 +910,7 @@ export class Store {
           .run(nextState, now, id, claimer);
       }
       this.recomputeMessageState(workspaceId, id, now);
-      return { message: toMessage(this.getRow(workspaceId, id)!, { delivery: this.deliveryFor(id, claimer)! }) };
+      return { message: toMessage(this.getRow(workspaceId, id)!, this.cipher, { delivery: this.deliveryFor(id, claimer)! }) };
     }
     if (row.state !== 'claimed' || row.claim_agent !== claimer) {
       return { conflict: row.state !== 'claimed' ? 'invalid_transition' : 'not_claimer' };
@@ -918,7 +932,7 @@ export class Store {
         .prepare("UPDATE messages SET state = ?, claim_agent = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
         .run(nextState, now, id);
     }
-    return { message: toMessage(this.getRow(workspaceId, id)!) };
+    return { message: toMessage(this.getRow(workspaceId, id)!, this.cipher) };
   }
 
   // ------------------------------------------------------------------ misc
