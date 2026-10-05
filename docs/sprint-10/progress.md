@@ -6,10 +6,10 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — session identity sidecar (#109) | dispatched | request sent on board `sprint-10`; awaiting dev claim |
-| T2 — CLI hardening bundle (#110 + follow-ups) | dispatched | request sent on board `sprint-10`; awaiting dev claim |
-| T3 — at-rest encryption (spec §10.7) | planned | dispatched after T1/T2 |
-| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | planned | dispatched after T3 |
+| T1 — session identity sidecar (#109) | **claimed (dev-1, in work)** | request #154 `msg_2b387ed7…`; dev-1 `currentTask` confirms; watch for PR + live test |
+| T2 — CLI hardening bundle (#110 + follow-ups) | **claimed (dev-1, in work)** | request #155 `msg_0b9e7fab…`; dev-1 `currentTask` confirms |
+| T3 — at-rest encryption (spec §10.7) | dispatched | request #156 `msg_ca43b1d8…`; queued for dev (design-first, independent QA) |
+| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | dispatched | request #157 `msg_2da3b605…`; queued for dev |
 | T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
 
 ## Verification record
