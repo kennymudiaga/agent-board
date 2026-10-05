@@ -6,11 +6,11 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — session identity sidecar (#109) | **delivered (PR #114); merge pending QA verdict** | **PR [#114](https://github.com/kennymudiaga/agent-board/pull/114)** (branch `feat/session-sidecar-109`, refs #109/#110): T1 acceptance live-proven (`ab session dev` → AB_SESSION_FILE identity, `.agentboard.json` byte-unchanged producer-1); 8 new hermetic tests, suite 198/199 (1 pre-existing archive timeout); `ab setup --check` clean. Conflict vs main resolved by producer (head `525073f`); **CI green**; QA dispatched (#195 qa-1 / #198 / #201), verdict pending. |
-| T2 — CLI hardening bundle (#110 + follow-ups) | **delivered (PR #114); same gate** | shipped alongside T1: win32 `--exec` docs/guard, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` ENOENT friendly error, hermetic tests. |
-| T3 — at-rest encryption (spec §10.7) | **COMPLETE — QA sign-off APPROVE** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, issue #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests, 193/194 full-suite (1 pre-existing archive timeout on baseline); docs/encryption-at-rest.md + spec §10.7. **qa-1 sign-off at `c020049`** (crypto.ts AES-256-GCM/scrypt/abenc1 envelope/no-key pass-through/explicit missing-key error/GCM tamper detection, db.ts keyed paths verified). Merged by producer. |
-| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **delivered (PR #115); awaiting QA sign-off** | **PR [#115](https://github.com/kennymudiaga/agent-board/pull/115)** (`feat/a2a-query-sse`): `tasks/query` + `GET /a2a/:agentId/events` SSE, workspace-scoped; 3 hermetic tests incl. W4 cross-workspace negative; 194/194 suite at push |
-| T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
+| T1 — session identity sidecar (#109) | **MERGED + QA PASS** | PR [#114](https://github.com/kennymudiaga/agent-board/pull/114) (`feat/session-sidecar-109`, merge `62da63ce`) — `ab session` / `AB_SESSION_FILE` sidecar (precedence env > session > local > global; source:`session`; `--delete` sidecar-only); `.agentboard.json` byte-unchanged producer-1; 8 new hermetic tests; suite 198/199 (1 pre-existing archive timeout on baseline). qa-1 **PASS** at `d69b644` (no findings); CI green at `915d600`. #109 closed. |
+| T2 — CLI hardening bundle (#110 + follow-ups) | **MERGED + QA PASS** | same PR #114: win32 `--exec` split guard (`execSplitWarnings`, non-fatal) + docs, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` missing-parent-dir friendly error; hermetic tests. #110 closed. |
+| T3 — at-rest encryption (spec §10.7) | **MERGED + QA PASS** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, merge `3bec8895`, #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests; `docs/encryption-at-rest.md` + spec §10.7. qa-1 **APPROVE** at `c020049` (crypto.ts envelope/scrypt/pass-through/tamper + db.ts keyed paths verified). #111 closed. |
+| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **MERGED + QA PASS** | PR [#115](https://github.com/kennymudiaga/agent-board/pull/115) (`feat/a2a-query-sse`, merge `b22c1bc`) — `tasks/query` (filters) + `GET /a2a/:agentId/events` SSE (created/updated/canceled, per-agent-token auth, emit-time W4 workspace scoping); 3 hermetic tests incl. cross-workspace negative; 198/199 suite. qa-1 **PASS** at `7d24227`. |
+| T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish; GHCR-flake #116 to be fixed first |
 
 ## Verification record
 
@@ -32,73 +32,40 @@
   dev-1 (code delivery beats claim ownership; dev-361f18 standing down,
   claims lapsing → dev-1 redelivery). **Finding: overlapping producer-1
   sessions (human UI + woken sessions) all wake on the same mail → duplicate
-  responses (QA dispatch ×4, spike approval ×5) — filed #113.**
+  responses (QA dispatch ×4, spike approval ×5, reassignment ×4) — filed
+  #113.** Secondary symptom: `progress.md` merge conflict markers landed on
+  main from parallel ledger edits (resolved in this commit).
 
-- **T3/T4 assignment + spike (producer-1, 2026-10-05):** dev-361f18 came
-  online, claimed T3 (`#156`) + T4 (`#157`) after T1/T2 were taken by
-  dev-1; confirmed via board (#160/#161). T3 spike record posted (#163):
-  **field-level AES-256-GCM over SQLCipher** — SQLCipher (`@journeyapps/
-  sqlcipher@6.0.0`) uninstallable on win32 (npm EBADPLATFORM); node:crypto
-  zero-dep envelope `abenc1:<iv>.<tag>.<ct>` (32k enc/s, round-trip
-  integrity, READ-MIXED rows, in-place migration). Approved with gates
-  (#165–#169): no-key pass-through stays byte-identical (tests assert
-  plaintext-at-rest when unset), spec 10.7 states the boundary (payload
-  cells only — ids/seq/state/timestamps/replyTo/idempotencyKey plaintext),
-  key-removal-after-encryption is destructive (documented), in-place
-  migration, **independent QA sign-off before merge** (producer dispatches
-  to `role:qa` when the implementation PR is ready). Files expected in the
-  dev's worktree/PR: `server/src/crypto.ts`, `db.ts`, `index.ts`,
-  `docs/encryption-at-rest.md`, spec §10.7; issue #111 filed.
+- **T3 spike (dev-361f18, 2026-10-05):** **field-level AES-256-GCM over
+  SQLCipher** — SQLCipher (`@journeyapps/sqlcipher@6.0.0`) uninstallable on
+  win32 (npm EBADPLATFORM); node:crypto zero-dep envelope
+  `abenc1:<iv>.<tag>.<ct>` (32k enc/s, round-trip integrity, READ-MIXED
+  rows, in-place migration). Approved with gates: no-key pass-through stays
+  byte-identical, spec 10.7 states the boundary (payload cells only),
+  key-removal destructive (documented), independent QA before merge.
 
-- **Wake note (producer-1, 2026-10-05):** the T3 spike wake (`#158`/`#163`)
-  was already fully handled by prior producer sessions (acked done, five
-  approvals, gates armed). No further producer action until the T3/T4 PRs
-  land — then: independent QA dispatch (T3 security review per plan), QA
-  for T4, and T5 release prep.
+- **T1/T2 handoff (producer-1, 2026-10-05):** dev-1's claims lapsed
+  mid-turn (long multi-file turn vs 5-min lease, #102 discipline) and
+  dev-361f18 reclaimed them (attempts 2). dev-1 flagged in-flight WIP
+  (branch `feat/session-sidecar-109`, T1 coded+tested). **Producer
+  reassigned #154/#155 back to dev-1** (code delivery beats claim
+  ownership); dev-361f18 stood down. dev-1 delivered PR #114.
 
-- **T3 delivered + T1/T2 handoff (producer-1, 2026-10-05):**
-  - dev-361f18 delivered T3 (PR #112, commit `037ad7c`, 5 hermetic tests;
-    suite 195/196 — the archive failure is a pre-existing env timeout,
-    repro'd on `origin/main` baseline). PR verified present + sound.
-  - **QA dispatched** to `role:qa` for the security-sensitive sign-off
-    (dispatched redundantly ×3 — #173/#174/#176; qa-1 picked up and is
-    actively reviewing PR #112).
-  - **T1/T2 handoff:** dev-1's claims lapsed mid-turn (long multi-file turn
-    vs 5-min lease, #102 discipline) and dev-361f18 reclaimed them
-    (attempts 2). dev-1 flagged in-flight WIP (branch
-    `feat/session-sidecar-109`, T1 coded+tested). **Producer reassigned
-    #154/#155 back to dev-1** (code delivery beats claim ownership);
-    dev-361f18 stands down, leaving claims to lapse for dev-1 (ack #181).
-    dev-1 online, continuing T1/T2 in the worktree; will renew claims
-    aggressively going forward.
-  - Producer sessions are noisy on this sprint (duplicate QA dispatches,
-    duplicate approvals) — noted; the T1 sidecar fix targets the underlying
-    shared-identity clobbering (#109).
-<<<<<<< HEAD
-- **T3 merged (producer-1, 2026-10-05):** PR #112 QA **PASS** (qa-1,
-  consolidated — duplicate dispatches acked, single verdict). Both #112 and
-  #114 were `CONFLICTING` vs main (conflict confined to
-  `docs/sprint-10/progress.md`); #112 resolved by a producer session (head
-  `edcc5f3`), **regular merged `3bec8895`**, #111 closed, board note to
-  dev-361f18 (#206). #114 conflict resolved by producer (head `525073f`),
-  CI running; merge pending T1/T2 QA sign-off + green CI.
+- **T3 QA (qa-1, 2026-10-05):** **APPROVE** — independent security review of
+  PR #112 at `c020049` (scratch worktree, full suite + build). crypto.ts
+  (AES-256-GCM, scrypt key, `abenc1:` envelope, no-key pass-through,
+  explicit missing-key error, GCM tamper detection) and db.ts keyed
+  read/write paths verified. T3 complete.
 
-- **T3 QA sign-off (qa-1, 2026-10-05):** **APPROVE** — independent security
-  review of PR #112 at commit `c020049` (scratch worktree, full suite +
-  build). crypto.ts (AES-256-GCM, scrypt key, `abenc1:` envelope, no-key
-  pass-through, explicit missing-key error, GCM tamper detection) and db.ts
-  keyed read/write paths verified. T3 complete: implementation + QA sign-off.
+- **T4 QA (qa-1, 2026-10-05):** **PASS** — consolidated, at `7d24227`
+  (scratch worktree). tasks/query filters + validation, SSE lifecycle
+  (submitted→working→completed), cross-workspace negative (B sees none of
+  A's tasks; B's stream silent while A emits), demo client, docs/a2a.md.
+  No findings.
 
-- **T4 — A2A `tasks/query` + SSE (dev-361f18, 2026-10-05):** PR
-  [#115](https://github.com/kennymudiaga/agent-board/pull/115) (`feat/a2a-query-sse`)
-  implements both deferred protocol-1.0 pieces:
-  `tasks/query` (board/to/type/state/limit filters, same thread→task mapping
-  as `tasks/get`) and `GET /a2a/:agentId/events` (SSE created/updated/canceled
-  task events, auth = the agent's per-agent token via `?token=` or header,
-  emit-time workspace scoping). Task events emitted on insert, pickup, ack,
-  requeue, purge (shared `taskEventOf`/`taskStateOf`). Demo client + docs/a2a.md
-  updated. 3 hermetic tests including the **W4 cross-workspace negative test**
-  (workspace B's query sees none of A's tasks; B's stream stays silent while A
-  emits). Full suite 194/194 green at push (archive T5 flaky on this host;
-  passed on the T4 run). Awaiting QA sign-off → producer merge.
->>>>>>> a23378d (docs: sprint 10 progress - T4 delivered, PR #115 (A2A tasks/query + SSE); suite 194/194)
+- **Merges (producer-1, 2026-10-05):** T3 `3bec8895`, T1/T2 `62da63ce`,
+  T4 `b22c1bc` (all regular merges; QA PASS on record). #109/#110/#111
+  closed. Open findings: #113 (overlapping producer sessions), #116
+  (ci.yml GHCR push failing on main pushes — must be fixed before the
+  v0.5.0 release). Dead T1/T2/T4 requests purged by the producer session
+  handling the ledger (deliveries on record via PRs/responses).
