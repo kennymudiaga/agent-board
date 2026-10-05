@@ -6,10 +6,10 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — session identity sidecar (#109) | **PR ready** | `ab session` + `AB_SESSION_FILE` sidecar; live-proven; tests green (below) |
-| T2 — CLI hardening bundle (#110 + follow-ups) | **PR ready** | `--exec` split guard + docs, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` ENOENT friendly error; hermetic tests (below) |
-| T3 — at-rest encryption (spec §10.7) | implemented (dev-361f18) | PR #112, AES-256-GCM behind `AB_ENCRYPTION_KEY`; QA dispatch pending |
-| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | in progress (dev-361f18) | worker standing down from T1/T2; implementing |
+| T1 — session identity sidecar (#109) | **in work (dev-1)** | dev-1 holds branch `feat/session-sidecar-109` (T1 coded + tested); claims at #154 (attempts 2, held by dev-361f18 pending lapse → dev-1 redelivery); reassignment confirmed to dev-1 (multiple producer messages) |
+| T2 — CLI hardening bundle (#110 + follow-ups) | **in work (dev-1)** | same branch track; T2 next after T1 (#155, attempts 2) |
+| T3 — at-rest encryption (spec §10.7) | **DELIVERED — QA in progress** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, head `c0200493`, issue #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests, 195/196 (1 pre-existing archive timeout on baseline); docs/encryption-at-rest.md + spec §10.7; conflict with main resolved (head updated 02:05). QA: qa-1 reviewing (crypto.ts/db.ts/index.ts), qa-8 + qa-7b90a9 standby; dispatch duplicated ×4 by overlapping producer sessions (#173/#174/#176/#184) |
+| T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **in work (dev-361f18)** | #157 claimed (attempts 2); implementation in progress; branch+PR pending |
 | T5 — release v0.5.0 | planned | after T1–T4 + QA; human approval before publish |
 
 ## Verification record
@@ -23,32 +23,50 @@
   multi-word quoting gap). Sprint-9 non-blocking follow-ups carried in
   (T2): `AB_WAKE_RESOLVE_MS` NaN, `--log` ENOENT. Plan approved by human;
   T1 + T2 dispatched 2026-10-05.
-- **T1+T2 (dev-1, 2026-10-05):** delivered together (one branch, two
-  commits — the tasks overlap files and were dispatched together).
-  **T1 (#109):** new `ab session <role> [--board] [--roles] [--delete]`
-  writes a per-session sidecar `.agentboard.<id>.json` (copies
-  server/token, overrides agentId/roles); `cli/src/config.js` gains the
-  sidecar layer (`AB_SESSION_FILE`, precedence env > session > local >
-  global, `source: session`, fresh cursors like env identities #67); the
-  workspace `.agentboard.json` identity is never written (saveConfig
-  persists `fileValues` only). Bootstrap templates (opencode/claude/vscode
-  `/ab` commands + AGENTS.md) rewritten: `as <role>` on an existing
-  identity now creates a session identity instead of re-initing (AB_* env
-  overrides documented as fallback); quickstart §3 shows the two-session
-  flow. **Live-proven on this machine:** producer-configured checkout →
-  `ab session dev --board sprint-10` → `AB_SESSION_FILE=...` → `whoami`
-  `dev-1 [dev] source: session`, heartbeat online, directory
-  `dev-1 [online]`; `.agentboard.json` byte-unchanged (`producer-1`),
-  plain `whoami` still `source: local`. **T2 (#110):** `ab watch --exec`
-  split guard (`execSplitWarnings`: trailing positionals / bare REPL
-  binaries warn to stderr, never fail) + help text + `docs/wake-on-mail.md`
-  §3.2 win32 quoting guidance (single token / `.cmd` wrapper);
-  `wakeResolveMs` coerces `AB_WAKE_RESOLVE_MS` (NaN/invalid → default,
-  sub-second clamped) in `wake-core.js` + plugin; `--log` missing parent
-  dir → friendly CliError instead of raw ENOENT (both win32 redirect and
-  posix fd paths). Evidence: suite **198/199** (191 baseline + 8 new
-  hermetic tests: 3 session-sidecar, 1 `--log` ENOENT, 2 exec-guard unit +
-  1 CLI warning integration, 1 `wakeResolveMs`); the 1 failure (archive T5
-  timeout) is pre-existing on this machine — repro'd on unmodified
-  origin/main. `ab setup --force` regenerated 4 files; `ab setup --check`
-  clean. PR: https://github.com/kennymudiaga/agent-board/pull/114 (refs #109, #110).
+- **Coordination (producer-1, 2026-10-05):** spawned worker `dev-361f18`
+  (headless `opencode run --model opencode-go/deepseek-v4-flash`, separate
+  session PID verified, works) claimed T3+T4; dev-1 (separate session,
+  likely human UI) held T1+T2. Claim-ownership churn: dev-1 lapsed
+  (long-turn), dev-361f18 reclaimed (attempts 2), then reassigned back to
+  dev-1 (code delivery beats claim ownership; dev-361f18 standing down,
+  claims lapsing → dev-1 redelivery). **Finding: overlapping producer-1
+  sessions (human UI + woken sessions) all wake on the same mail → duplicate
+  responses (QA dispatch ×4, spike approval ×5) — filed #113.**
+- **T3/T4 assignment + spike (producer-1, 2026-10-05):** dev-361f18 came
+  online, claimed T3 (`#156`) + T4 (`#157`) after T1/T2 were taken by
+  dev-1; confirmed via board (#160/#161). T3 spike record posted (#163):
+  **field-level AES-256-GCM over SQLCipher** — SQLCipher (`@journeyapps/
+  sqlcipher@6.0.0`) uninstallable on win32 (npm EBADPLATFORM); node:crypto
+  zero-dep envelope `abenc1:<iv>.<tag>.<ct>` (32k enc/s, round-trip
+  integrity, READ-MIXED rows, in-place migration). Approved with gates
+  (#165–#169): no-key pass-through stays byte-identical (tests assert
+  plaintext-at-rest when unset), spec 10.7 states the boundary (payload
+  cells only — ids/seq/state/timestamps/replyTo/idempotencyKey plaintext),
+  key-removal-after-encryption is destructive (documented), in-place
+  migration, **independent QA sign-off before merge** (producer dispatches
+  to `role:qa` when the implementation PR is ready). Files expected in the
+  dev's worktree/PR: `server/src/crypto.ts`, `db.ts`, `index.ts`,
+  `docs/encryption-at-rest.md`, spec §10.7; issue #111 filed.
+- **Wake note (producer-1, 2026-10-05):** the T3 spike wake (`#158`/`#163`)
+  was already fully handled by prior producer sessions (acked done, five
+  approvals, gates armed). No further producer action until the T3/T4 PRs
+  land — then: independent QA dispatch (T3 security review per plan), QA
+  for T4, and T5 release prep.
+- **T3 delivered + T1/T2 handoff (producer-1, 2026-10-05):**
+  - dev-361f18 delivered T3 (PR #112, commit `037ad7c`, 5 hermetic tests;
+    suite 195/196 — the archive failure is a pre-existing env timeout,
+    repro'd on `origin/main` baseline). PR verified present + sound.
+  - **QA dispatched** to `role:qa` for the security-sensitive sign-off
+    (dispatched redundantly ×3 — #173/#174/#176; qa-1 picked up and is
+    actively reviewing PR #112).
+  - **T1/T2 handoff:** dev-1's claims lapsed mid-turn (long multi-file turn
+    vs 5-min lease, #102 discipline) and dev-361f18 reclaimed them
+    (attempts 2). dev-1 flagged in-flight WIP (branch
+    `feat/session-sidecar-109`, T1 coded+tested). **Producer reassigned
+    #154/#155 back to dev-1** (code delivery beats claim ownership);
+    dev-361f18 stands down, leaving claims to lapse for dev-1 (ack #181).
+    dev-1 online, continuing T1/T2 in the worktree; will renew claims
+    aggressively going forward.
+  - Producer sessions are noisy on this sprint (duplicate QA dispatches,
+    duplicate approvals) — noted; the T1 sidecar fix targets the underlying
+    shared-identity clobbering (#109).
