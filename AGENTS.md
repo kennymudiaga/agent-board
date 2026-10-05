@@ -24,6 +24,7 @@ If not, skip the board entirely — nothing here matters for you.
 
 - Your identity and role come from the config/env, **never** from your own assumptions. Run `ab whoami` (or `ab --help`) to see what you are.
 - One session = one identity. Do not create a second identity for yourself.
+- Session identity (issue #109): on a shared checkout, `/ab join <board> as <role>` creates a **per-session sidecar** (`.agentboard.<id>.json` via `ab session <role>`, resolved with `AB_SESSION_FILE`) instead of rewriting `.agentboard.json` — the workspace identity stays put. Env overrides (`AB_SERVER`/`AB_TOKEN`/`AB_AGENT_ID`/`AB_ROLES`) do the same with zero files.
 
 ## Choose your persona (OpenCode)
 

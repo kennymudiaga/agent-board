@@ -45,7 +45,7 @@ function gitLog(dir) {
  * the runner's environment (issue #54: an ambient AB_AGENT_ID/AB_ROLES from a
  * spawned-worker session leaked into children and broke the suite).
  */
-const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT', 'AB_WORKSPACE', 'AB_BOARDS', 'AB_BOARD'];
+const AB_ENV_VARS = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_ROLES', 'AB_SPAWN_TIER', 'AB_SPAWN_MODEL', 'AB_SPAWN_AGENT', 'AB_WORKSPACE', 'AB_BOARDS', 'AB_BOARD', 'AB_SESSION_FILE'];
 
 function runCli(args, { cwd, env = {} } = {}) {
   return new Promise((resolvePromise) => {
@@ -964,6 +964,102 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('session identity sidecar: `ab session dev` never clobbers the workspace identity (#109)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir); // deliberate local identity (cli-agent / qa,dev)
+
+      // `ab session dev` writes the sidecar; the workspace file stays untouched.
+      const s = await runCli(['session', 'dev'], { cwd: dir });
+      expect(s.code).toBe(0, s.stderr);
+      expect(s.stdout).toContain('session identity dev-1');
+      const sidecar = JSON.parse(readFileSync(join(dir, '.agentboard.dev-1.json'), 'utf8'));
+      expect(sidecar).toMatchObject({ server: baseUrl, token: TOKEN, agentId: 'dev-1', roles: ['dev'] });
+
+      const cfg = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(cfg).toMatchObject({ agentId: AGENT_ID, roles: ['qa', 'dev'], server: baseUrl });
+
+      // The session resolves through AB_SESSION_FILE: source=session, dev-1.
+      const who = await runCliRaw(['whoami', '--json'], { cwd: dir, env: { AB_SESSION_FILE: join(dir, '.agentboard.dev-1.json') } });
+      expect(who.code).toBe(0, who.stderr);
+      expect(JSON.parse(who.stdout)).toMatchObject({ agentId: 'dev-1', roles: ['dev'], source: 'session', sessionFile: join(dir, '.agentboard.dev-1.json') });
+
+      // Plain `ab whoami` (no AB_SESSION_FILE) is still the workspace identity.
+      const plain = await runCliRaw(['whoami', '--json'], { cwd: dir });
+      expect(JSON.parse(plain.stdout)).toMatchObject({ agentId: AGENT_ID, source: 'local' });
+
+      // A session identity never writes into the workspace file: join persists
+      // only operational state (boards), keeping the deliberate identity.
+      const joined = await runCliRaw(['join', '--board', 'sprint-7'], { cwd: dir, env: { AB_SESSION_FILE: join(dir, '.agentboard.dev-1.json') } });
+      expect(joined.code).toBe(0, joined.stderr);
+      const after = JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8'));
+      expect(after).toMatchObject({ agentId: AGENT_ID, roles: ['qa', 'dev'], server: baseUrl });
+      expect(after.boards).toContain('sprint-7');
+
+      // AB_SESSION_FILE pointing at a missing sidecar is a friendly error.
+      const missing = await runCliRaw(['whoami'], { cwd: dir, env: { AB_SESSION_FILE: join(dir, '.agentboard.nope.json') } });
+      expect(missing.code).not.toBe(0);
+      expect(missing.stderr).toContain('does not exist');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ab session --board joins for the session; explicit ids and roles pass through; --delete cleans up (#109)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir, 'producer-1', ['--roles', 'producer']);
+      const s = await runCli(['session', 'qa', '--board', 'sprint-7'], { cwd: dir });
+      expect(s.code).toBe(0, s.stderr);
+      expect(s.stdout).toContain('qa-1');
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.qa-1.json'), 'utf8'))).toMatchObject({ agentId: 'qa-1', roles: ['qa'] });
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8')).agentId).toBe('producer-1'); // untouched
+
+      // The joined board is visible under the session identity, persisted only
+      // as operational state in the workspace file.
+      const who = await runCliRaw(['whoami', '--json'], { cwd: dir, env: { AB_SESSION_FILE: join(dir, '.agentboard.qa-1.json') } });
+      expect(JSON.parse(who.stdout)).toMatchObject({ agentId: 'qa-1', roles: ['qa'], boards: ['sprint-7'] });
+
+      // Explicit agent id (`qa-2`) stays as-is; --roles overrides.
+      const ex = await runCli(['session', 'qa-2', '--roles', 'qa,dev'], { cwd: dir });
+      expect(ex.code).toBe(0, ex.stderr);
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.qa-2.json'), 'utf8'))).toMatchObject({ agentId: 'qa-2', roles: ['qa', 'dev'] });
+
+      // --delete removes the sidecar only — never the workspace identity.
+      const del = await runCli(['session', 'qa-2', '--delete'], { cwd: dir });
+      expect(del.code).toBe(0, del.stderr);
+      expect(existsSync(join(dir, '.agentboard.qa-2.json'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(dir, '.agentboard.json'), 'utf8')).agentId).toBe('producer-1');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AB_* env overrides win over the session sidecar; session without identity asks for init (#109)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      await runCli(['session', 'dev'], { cwd: dir });
+      const who = await runCliRaw(['whoami', '--json'], {
+        cwd: dir,
+        env: { AB_SESSION_FILE: join(dir, '.agentboard.dev-1.json'), AB_AGENT_ID: 'env-1', AB_ROLES: 'dev', AB_SERVER: baseUrl, AB_TOKEN: TOKEN },
+      });
+      expect(JSON.parse(who.stdout)).toMatchObject({ agentId: 'env-1', roles: ['dev'], source: 'env' });
+
+      const fresh = makeWorkspace();
+      try {
+        // No identity anywhere — `ab session` cannot fabricate server/token.
+        const s = await runCliRaw(['session', 'dev'], { cwd: fresh });
+        expect(s.code).not.toBe(0);
+        expect(s.stderr).toContain('needs an identity');
+      } finally {
+        rmSync(fresh, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a fresh clone with global config heartbeats without local init; re-init never erases (#41)', async () => {
     const gh = makeGlobalHome();
     try {
@@ -1334,6 +1430,20 @@ describe('ab CLI against the reference server', () => {
       const bad = await runCli(['spawn', 'qa', '--board', 'sprint-9', '--dry-run', '--no-worktree', '--log', dir], { cwd: dir });
       expect(bad.code).not.toBe(0);
       expect(bad.stderr).toContain('must be a file path');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spawn --log with a missing parent directory errors friendly instead of raw ENOENT (#110 follow-up)', async () => {
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      const missing = join(dir, 'no-such-dir', 'worker.log');
+      const r = await runCli(['spawn', 'qa', '--board', 'sprint-9', '--dry-run', '--no-worktree', '--log', missing], { cwd: dir });
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain('parent directory does not exist');
+      expect(r.stderr).toContain('no-such-dir');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
