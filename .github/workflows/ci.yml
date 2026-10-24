@@ -61,26 +61,13 @@ jobs:
           push: false
           tags: agent-board:ci
 
-      # GHCR publishing on tags is owned by the Release workflow (release.yml
-      # ghcr-push, which runs after npm publish succeeds). Push here only on
-      # branch pushes (main): tags skip so the tag-triggered CI run can't race
-      # the Release run, and PRs skip (github.ref_name like `105/merge` is an
-      # invalid Docker tag) — see issue #100.
-      - name: Login to GHCR
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push to GHCR
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: server/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/kennymudiaga/agent-board:${{ github.ref_name }}
-            ghcr.io/kennymudiaga/agent-board:latest
+      # GHCR publishing is owned by the Release workflow (release.yml
+      # ghcr-push, which runs after npm publish succeeds) — single publisher
+      # per the #100 decision. CI only builds the image to catch Dockerfile
+      # drift; it never logs in or pushes.
+      #
+      # Main-branch CI used to push `:main` + `:latest` here, but the default
+      # workflow GITHUB_TOKEN only has `packages: read` for org packages, so
+      # every push to main failed with "installation not allowed to Write
+      # organization package" (issue #116). Tag runs must stay build-only too,
+      # so they cannot race the Release workflow.

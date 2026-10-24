@@ -1,7 +1,22 @@
-# AgentBoard Protocol Spec v0.4.1
+# AgentBoard Protocol Spec v0.5.0
 
-> Status: **frozen for Sprint 9** (reference implementation implements *to* this document).
-> Version: 0.4.1 · Last updated: 2026-10-04
+> Status: **frozen for Sprint 10** (reference implementation implements *to* this document).
+> Version: 0.5.0 · Last updated: 2026-10-05
+>
+> **v0.5.0 (identity, CLI hardening, at-rest encryption & A2A events):**
+> optional **at-rest encryption** — field-level AES-256-GCM over `payload`
+> cells behind `AB_ENCRYPTION_KEY` (unset = current transport-only plaintext
+> behavior; envelope `abenc1:`, key via scrypt; boundary and migration in
+> §10.7 / `docs/encryption-at-rest.md`, #111). **A2A extension:**
+> `tasks/query` plus a per-agent `GET /a2a/:agentId/events` SSE stream
+> (`submitted` / `working` / `completed` / `canceled`), workspace-scoped like
+> the rest of the server (`docs/a2a.md`, #115). **Session identity** is
+> client-side only: config resolution is now env → session sidecar →
+> local file → global (`ab session`, `AB_SESSION_FILE`), so bootstrap
+> `as <role>` never rewrites the workspace identity (#109). **CLI hardening:**
+> win32 `--exec` split guard, `AB_WAKE_RESOLVE_MS` NaN coercion, friendly
+> `--log` parent-dir error (#110). Wire protocol unchanged from v0.4.1
+> apart from the additive A2A surface and the opt-in encryption envelope.
 >
 > **v0.4.1 (wake + worker ergonomics — no protocol changes):** wake plugin
 > lazy binding + global-config fallback (`resolveConfig` now env → workspace

@@ -10,7 +10,7 @@
 | T2 — CLI hardening bundle (#110 + follow-ups) | **MERGED + QA PASS** | same PR #114: win32 `--exec` split guard (`execSplitWarnings`, non-fatal) + docs, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` missing-parent-dir friendly error; hermetic tests. #110 closed. |
 | T3 — at-rest encryption (spec §10.7) | **MERGED + QA PASS** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, merge `3bec8895`, #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests; `docs/encryption-at-rest.md` + spec §10.7. qa-1 **APPROVE** at `c020049` (crypto.ts envelope/scrypt/pass-through/tamper + db.ts keyed paths verified). #111 closed. |
 | T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **MERGED + QA PASS** | PR [#115](https://github.com/kennymudiaga/agent-board/pull/115) (`feat/a2a-query-sse`, merge `b22c1bc`) — `tasks/query` (filters) + `GET /a2a/:agentId/events` SSE (created/updated/canceled, per-agent-token auth, emit-time W4 workspace scoping); 3 hermetic tests incl. cross-workspace negative; 198/199 suite. qa-1 **PASS** at `7d24227`. |
-| T5 — release v0.5.0 | **claimed (dev-1, in work)** | request #233 `sprint-10-t5` (claimed dev-1): version bumps 0.5.0 (root+cli+server+mcp+vscode-ext) + spec header + `ab setup --force/--check` + **ci.yml GHCR fix (#116)**; **ONE release PR, no tag/publish**; suite+build green. Tag → OIDC publish → GHCR → Release notes = producer step after the PR (human approval before publish). |
+| T5 — release v0.5.0 | **PR OPEN (review/QA pending)** | PR [#118](https://github.com/kennymudiaga/agent-board/pull/118) (`spawn/dev-t5resume`, head `e45feaf`, request #233): versions → 0.5.0 (root+cli+server+mcp+vscode-ext) + spec header/§10.7 shipped-encryption record + `ab setup --force` regen (11 files) + **ci.yml GHCR fix (#116)** — main-push GHCR publish removed; `release.yml` stays the single publisher (#100). Verified: 207/207 tests (19 files), build clean, `setup --check` up to date. **No tag/publish** — producer + human own tag → OIDC publish → GHCR → release notes. |
 
 ## Verification record
 
@@ -69,3 +69,17 @@
   (ci.yml GHCR push failing on main pushes — must be fixed before the
   v0.5.0 release). Dead T1/T2/T4 requests purged by the producer session
   handling the ledger (deliveries on record via PRs/responses).
+
+- **T5 release prep (dev-t5b, 2026-10-05):** PR
+  [#118](https://github.com/kennymudiaga/agent-board/pull/118) at
+  `e45feaf` — resumes the interrupted worker's preserved commit `920e928`:
+  versions 0.5.0 (root+cli+server+mcp+vscode-ext, lock synced), spec header
+  v0.5.0 + §10.7 shipped field-level AES-256-GCM record, `ab setup --force`
+  regen (11 files, `--check` clean). **#116 fix:** main-push GHCR step
+  removed after confirming the failure in run `37256426643` (`denied:
+  installation not allowed to Write organization package`); `ci.yml` docker
+  job is build-only and `release.yml` `ghcr-push` remains the single
+  publisher (#100). Evidence: `npm test` **207/207** (19 files),
+  `npm run build` clean, `ab setup --check` up to date. **No tag/publish
+  performed** — producer + human own tag → OIDC publish → GHCR → release
+  notes.
