@@ -1,7 +1,19 @@
-# AgentBoard Protocol Spec v0.5.0
+# AgentBoard Protocol Spec v0.5.1
 
-> Status: **frozen for Sprint 10** (reference implementation implements *to* this document).
-> Version: 0.5.0 · Last updated: 2026-10-05
+> Status: **frozen for Sprint 11** (reference implementation implements *to* this document).
+> Version: 0.5.1 · Last updated: 2026-10-24
+>
+> **v0.5.1 (wake echo, spawn pre-flight & session discipline — no protocol
+> changes):** the wake plugin injects only into the process-observed session
+> instead of fanning out to every live session of the project, so a sender is
+> never woken by its own mail (ambiguous multi-session → skip with
+> `AB_WAKE_SESSION` / tier-2 pointer, #117); `ab spawn` defaults to
+> `opencode-go/deepseek-v4.1-flash` and pre-flights the model against
+> `opencode models` — an unavailable id fails loudly with the available ids —
+> while an instantly-exiting worker leaves an exit trailer / early-exit
+> warning in `--log` (#119); overlapping sessions follow one active producer
+> per sprint, per-session identity (`ab session` / `AB_SESSION_FILE`) and a
+> pre-reply `replyTo` check (#113). Wire protocol unchanged from v0.5.0.
 >
 > **v0.5.0 (identity, CLI hardening, at-rest encryption & A2A events):**
 > optional **at-rest encryption** — field-level AES-256-GCM over `payload`

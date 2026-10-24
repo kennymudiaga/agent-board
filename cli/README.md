@@ -39,7 +39,7 @@ ab send --board sprint-7 --to role:qa --type request --message "review PR #12"
 | `ab read --wait <sec>` | Pick up messages (long-poll loop). `--ack claimed\|done\|failed` auto-acks; the cursor is a server-computed watermark — at-least-once safe across crashes. |
 | `ab ack --id <id> --status done\|failed\|claimed` | Finalize (or renew the lease on) a claimed message. |
 | `ab agents` | List the agent directory: `--board`, `--role`, `--status idle\|busy`, `--json`. |
-| `ab spawn <role>` | Spawn transient workers for a role: `--board`, `--count`, `--brief`/`-f <file>`, `--agent-id`, `--dry-run`. Tier via `AB_SPAWN_TIER` (default `opencode`; `vs-code` prints `/ab join <board> as <role>` instructions). Model via `AB_SPAWN_MODEL` (default `opencode-go/deepseek-v4-flash`). The message must come **before** `-f` — opencode's `--file` is a yargs array option that consumes every following token. |
+| `ab spawn <role>` | Spawn transient workers for a role: `--board`, `--count`, `--brief`/`-f <file>`, `--agent-id`, `--dry-run`. Tier via `AB_SPAWN_TIER` (default `opencode`; `vs-code` prints `/ab join <board> as <role>` instructions). Model via `AB_SPAWN_MODEL` (default `opencode-go/deepseek-v4.1-flash`), pre-flighted against `opencode models` — an unavailable id fails loudly with the available ids instead of spawning a worker that exits instantly (#119). The message must come **before** `-f` — opencode's `--file` is a yargs array option that consumes every following token. |
 
 Add `--json` to any command for machine-readable output. Identity can come
 from env vars (`AB_SERVER`, `AB_TOKEN`, `AB_AGENT_ID`) instead of the config
