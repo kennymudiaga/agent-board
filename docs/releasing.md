@@ -99,9 +99,11 @@ npm view @agent_board/cli@0.3.0 --json | grep -i provenance
 
 **v0.3.0 (sprint 6 T3):**
 
-- [ ] Bind trusted publishing for **`@agent_board/mcp`** on npm (Provider: GitHub
+- [x] Bind trusted publishing for **`@agent_board/mcp`** on npm (Provider: GitHub
       Actions · Package: `@agent_board/mcp` · Owner: `kennymudiaga` · Repository:
-      `agent-board` · Workflow: `release.yml` · Environment: `release`)
+      `agent-board` · Workflow: `release.yml` · Environment: `release`) —
+      evidenced by every release since v0.3.1 publishing mcp via OIDC
+      (latest: v0.5.0, Release run 40043728943).
 
 ## CI parity
 
