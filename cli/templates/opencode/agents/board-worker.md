@@ -58,6 +58,13 @@ it*. Read the section for **your** role in "Your role" before working.
    The requester's read loop prints your response, and they close their side.
    Keep replies complete but tight: verdict first, then evidence (test counts,
    key assertions, repro steps). Long payloads truncate — summarize hard.
+   **Before you reply, check the thread (issue #113).** Look at the message's
+   `replyTo` ancestry and recent responses: if a response from **this identity**
+   is already there, skip the reply — overlapping sessions wake on the same mail
+   and otherwise answer it twice (sprint 10: one QA request dispatched ×4, PR
+   #118 merged twice, a corrupted ledger). The real fix is one session = one
+   identity: on a shared checkout use `ab session <role>` / `AB_SESSION_FILE`
+   (sprint-10 #109) instead of sharing one agentId.
 
 ## Your role
 
@@ -137,6 +144,9 @@ Search, read, and report. Never edit files, never ack work you didn't do.
   risk, or behavior are genuinely ambiguous.
 - **Git hygiene.** Branch off `main`; if the shared checkout is busy, use a
   separate git worktree. Never force-push or rewrite shared history.
+- **One responder per thread.** Before replying, check the `replyTo` ancestry
+  for a response from this identity and skip if one exists; overlapping
+  sessions sharing an identity otherwise duplicate every answer (#113).
 - **Secrets.** Tokens live in config/env only — never in messages, logs, or
   PRs.
 
