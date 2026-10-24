@@ -7,7 +7,19 @@ import { join, resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Store } from '../../server/src/db.ts';
 import { createApp } from '../../server/src/app.ts';
-import { createSpawnWorktree, installWorktree, spawnWorker } from '../src/commands.js';
+import {
+  SPAWN_DEFAULT_MODEL,
+  SPAWN_EARLY_EXIT_WINDOW_MS,
+  awaitEarlyExit,
+  createSpawnWorktree,
+  formatEarlyExitWarning,
+  installWorktree,
+  parseModelList,
+  preflightSpawnModel,
+  recordSpawnExit,
+  resolveSpawnModel,
+  spawnWorker,
+} from '../src/commands.js';
 
 const TOKEN = 'cli-test-token';
 const CLI = resolve(import.meta.dirname, '..', 'bin', 'ab.js');
@@ -801,7 +813,7 @@ describe('ab CLI against the reference server', () => {
       expect(run.code).toBe(0, run.stderr);
       expect(run.stdout).toContain('opencode run');
       expect(run.stdout).toContain('--agent board-worker');
-      expect(run.stdout).toContain('--model opencode-go/deepseek-v4-flash');
+      expect(run.stdout).toContain('--model opencode-go/deepseek-v4.1-flash');
       expect(run.stdout).toContain('review PR #12');
       expect(run.stdout).toContain('-f brief.md');
       expect(run.stdout).toContain('nothing executed');
@@ -1447,5 +1459,127 @@ describe('ab CLI against the reference server', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // --- sprint 11 T2 (issue #119): spawn model default + instant-exit evidence --
+
+  it('parseModelList keeps provider/model ids and ignores decoration (#119)', () => {
+    const out = '\u001b[32mopencode-go/deepseek-v4-pro\u001b[0m\n\n  opencode-go/deepseek-v4.1-flash  \nrubbish without a slash\n';
+    expect(parseModelList(out)).toEqual(['opencode-go/deepseek-v4-pro', 'opencode-go/deepseek-v4.1-flash']);
+    expect(parseModelList(undefined)).toEqual([]);
+  });
+
+  it('preflightSpawnModel accepts an offered id, rejects an unknown one with the available ids (#119)', () => {
+    const available = ['opencode-go/deepseek-v4-pro', 'opencode-go/deepseek-v4.1-flash'];
+    const ok = preflightSpawnModel('opencode-go/deepseek-v4.1-flash', { listModels: () => available });
+    expect(ok).toMatchObject({ checked: true, model: 'opencode-go/deepseek-v4.1-flash' });
+    expect(ok.available).toEqual(available);
+
+    // The stale sprint-9 default must fail loudly, not spawn a doomed worker.
+    let err;
+    try {
+      preflightSpawnModel('opencode-go/deepseek-v4-flash', { listModels: () => available });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toContain('opencode-go/deepseek-v4-flash'); // the rejected id
+    expect(err.message).toContain('available ids');
+    expect(err.message).toContain('opencode-go/deepseek-v4-pro');
+    expect(err.message).toContain('AB_SPAWN_MODEL'); // the fix
+  });
+
+  it('preflightSpawnModel degrades to a warning when the model list is unavailable (#119)', () => {
+    const failed = preflightSpawnModel('x/y', {
+      listModels: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(failed).toMatchObject({ checked: false, model: 'x/y' });
+    expect(failed.warning).toContain('skipping model pre-flight');
+
+    const empty = preflightSpawnModel('x/y', { listModels: () => [] });
+    expect(empty.checked).toBe(false);
+    expect(empty.warning).toContain('no ids');
+  });
+
+  it('spawn model defaults to the current provider id and AB_SPAWN_MODEL overrides it (#119)', async () => {
+    expect(SPAWN_DEFAULT_MODEL).toBe('opencode-go/deepseek-v4.1-flash');
+    expect(resolveSpawnModel(undefined, undefined)).toBe(SPAWN_DEFAULT_MODEL);
+    expect(resolveSpawnModel('opencode-go/deepseek-v4-pro', undefined)).toBe('opencode-go/deepseek-v4-pro');
+    expect(resolveSpawnModel(undefined, 'cfg/model')).toBe('cfg/model');
+
+    const dir = makeWorkspace();
+    try {
+      await initWorkspace(dir);
+      const def = await runCli(['spawn', 'qa', '--board', 'sprint-11', '--dry-run', '--no-worktree', '--json'], { cwd: dir });
+      expect(def.code).toBe(0, def.stderr);
+      expect(JSON.parse(def.stdout).model).toBe(SPAWN_DEFAULT_MODEL);
+
+      const over = await runCli(['spawn', 'qa', '--board', 'sprint-11', '--dry-run', '--no-worktree', '--json'], {
+        cwd: dir,
+        env: { AB_SPAWN_MODEL: 'opencode-go/deepseek-v4-pro' },
+      });
+      expect(over.code).toBe(0, over.stderr);
+      expect(JSON.parse(over.stdout).model).toBe('opencode-go/deepseek-v4-pro');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('recordSpawnExit appends the exit code to --log even when the worker writes nothing (#119)', async () => {
+    const dir = makeWorkspace();
+    const silentLog = join(dir, 'silent.log');
+    const noisyLog = join(dir, 'noisy.log');
+    const silent = join(dir, 'silent.cjs');
+    const noisy = join(dir, 'noisy.cjs');
+    writeFileSync(silent, 'process.exit(3);\n');
+    writeFileSync(noisy, 'console.error("boom: unknown model");\nprocess.exit(2);\n');
+    try {
+      // 0-byte-opencode shape: no output at all — the trailer must still say why.
+      const quiet = spawnWorker([silent], {}, { logFile: silentLog, command: process.execPath });
+      recordSpawnExit(quiet, { logFile: silentLog, agentId: 'qa-silent' });
+      const quietInfo = await awaitEarlyExit(quiet, 10000);
+      expect(quietInfo.code).toBe(3);
+      const quietLog = readFileSync(silentLog, 'utf8');
+      expect(quietLog).toContain('qa-silent exited after');
+      expect(quietLog).toContain('code=3');
+
+      // The child's stderr is captured too (existing --log stdio/redirect).
+      const loud = spawnWorker([noisy], {}, { logFile: noisyLog, command: process.execPath });
+      recordSpawnExit(loud, { logFile: noisyLog, agentId: 'qa-noisy' });
+      const loudInfo = await awaitEarlyExit(loud, 10000);
+      expect(loudInfo.code).toBe(2);
+      const loudLog = readFileSync(noisyLog, 'utf8');
+      expect(loudLog).toContain('boom: unknown model');
+      expect(loudLog).toContain('code=2');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('awaitEarlyExit returns null for a worker that stays up (healthy fire-and-forget, #119)', async () => {
+    const dir = makeWorkspace();
+    const probe = join(dir, 'alive.cjs');
+    writeFileSync(probe, 'setTimeout(() => {}, 10000);\n');
+    try {
+      const child = spawnWorker([probe], {}, { command: process.execPath });
+      const info = await awaitEarlyExit(child, 150);
+      expect(info).toBeNull();
+      child.kill();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('formatEarlyExitWarning names the worker, the exit code, and the log (#119)', () => {
+    const withLog = formatEarlyExitWarning('qa-abc123', { code: 1, signal: null }, { windowMs: SPAWN_EARLY_EXIT_WINDOW_MS, logFile: 'worker.log' });
+    expect(withLog).toContain('worker qa-abc123 exited within');
+    expect(withLog).toContain('exit 1');
+    expect(withLog).toContain('worker.log');
+
+    const noLog = formatEarlyExitWarning('qa-def456', { error: new Error('ENOENT') });
+    expect(noLog).toContain('failed to spawn: ENOENT');
+    expect(noLog).toContain('--log');
   });
 });
