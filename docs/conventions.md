@@ -160,10 +160,16 @@ change). Absent tags = polling-only (today's behavior).
   surprise rebases) comes from two writers in one tree.
 - **Read-only / coordination sessions** (producer, watcher, reviewer, `ab
   watch`) need no worktree — they never write.
-- **`ab spawn` defaults dev/qa workers to a fresh branch + temp worktree**
-  (`spawn/<agentId>` under `<tmp>/ab-worktrees/`, dependencies installed with
-  `npm ci`); `--no-worktree` opts out, `--worktree` forces it for other roles.
+- **`ab spawn` defaults dev/qa workers to a fresh branch + workspace-local
+  worktree** (`spawn/<agentId>` under `<repo>/_worktrees/<agentId>`,
+  dependencies installed with `npm ci`); `--no-worktree` opts out, `--worktree`
+  forces it for other roles. Worktrees stay inside the workspace (gitignored)
+  so headless agents never hit an external-directory permission prompt.
   `--dry-run` prints the whole plan (worktree + install + opencode command).
+- **Briefs:** producers write `<repo>/_briefs/<agentId>.md` (gitignored) and
+  pass it with `ab spawn ... -f _briefs/<agentId>.md`. The file is read at
+  spawn time, so no code path needs to know the convention — it just keeps
+  briefs beside the worktrees instead of in `%TEMP%`.
 - **Cleanup:** `git worktree remove <path>` after the worker exits; prune
   leftovers with `git worktree prune` (branches stay for PRs).
 - **Prefer worktrees over full scratch clones for QA** — same repo objects,

@@ -4,8 +4,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
 import { CONFIG_FILE, configPath, globalConfigPath, loadConfig, parseList, saveConfig } from './config.js';
 
@@ -916,13 +915,16 @@ export function recordSpawnExit(child, { logFile = null, agentId = 'worker', sta
  */
 /**
  * Spawn worktree plumbing (issue #78 — one writer per checkout).
- * A spawned dev/qa worker gets a fresh branch (`spawn/<agentId>`) on a temp
- * worktree, so it never shares a checkout with the human or another worker.
+ * A spawned dev/qa worker gets a fresh branch (`spawn/<agentId>`) on a
+ * workspace-local worktree (`<repo>/_worktrees/<agentId>`, gitignored), so it
+ * never shares a checkout with the human or another worker — and never leaves
+ * the workspace, which headless agents cannot access without a permission
+ * prompt (sprint 11 T5, dogfood finding).
  */
 export function spawnWorktreePlan(repoDir, agentId) {
   return {
     branch: `spawn/${agentId}`,
-    path: join(tmpdir(), 'ab-worktrees', `${basename(repoDir)}-${agentId}`),
+    path: join(repoDir, '_worktrees', agentId),
   };
 }
 
