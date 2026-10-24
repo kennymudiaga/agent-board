@@ -10,3 +10,5 @@ vscode-ext/test/.tmp-profile/
 .agentboard.json
 .agentboard.*.json
 .scratch/
+_worktrees/
+_briefs/

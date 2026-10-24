@@ -9,7 +9,8 @@
 | T1 — wake echo (#117) | **PR open (QA PASS)** | [PR #122](https://github.com/kennymudiaga/agent-board/pull/122) (head `d184ac7`) — spike recorded (§7.1): `PluginInput` has no session id, `session.list` is project-wide; fan-out removed for process-observed single-session injection, ambiguous multi-session skip with `AB_WAKE_SESSION`/tier-2 pointer; 21/21 wake tests, 213/213 suite; qa-t1 **PASS**. Docs-only merge with main resolved here. |
 | T2 — `ab spawn` defaults + instant exits (#119) | **MERGED + QA PASS** | PR [#120](https://github.com/kennymudiaga/agent-board/pull/120) (merge `2e299f3`): default model `opencode-go/deepseek-v4.1-flash`, model pre-flight with available ids, instant-exit trailer/warning; 214/214 tests; qa-t2 **PASS** at `28f007f` (independent repro of both behaviors); main CI green `40046337112`. Non-blocking: `cli/README.md` stale default line -> fold into T4. |
 | T3 — overlapping-session discipline (#113) | **MERGED + QA PASS** | PR [#121](https://github.com/kennymudiaga/agent-board/pull/121) (merge `e2f800c`): templates + `docs/conventions.md`, `ab setup --force` regen (11 files drift-clean), 207/207; qa-t3 **PASS** at `b6e5768`; `ab read` responded marker (option 3) deferred. |
-| T4 — release v0.5.1 | **pending** | after T1–T3 merged + QA; tag/publish gated on human approval |
+| T4 — release v0.5.1 | **dispatched** | request `sprint-11-t4-release051` (dev-release051): version bumps 0.5.1 + spec header + setup regen + README default fix + T1 ledger row; ONE PR, no tag/publish |
+| T5 — workspace-local worktrees + briefs | **dispatched** | request `sprint-11-t5-worktrees` (dev-worktrees): `_worktrees/<agentId>` + `_briefs/` convention, help/docs/tests; `.gitignore` already updated |
 
 ## Verification record
 

@@ -35,6 +35,7 @@
 - T2: `ab spawn` model default + instant-exit observability (#119, MEDIUM)
 - T3: overlapping-session discipline (#113, LOW–MEDIUM) — persona/SKILL/docs + generated files
 - T4: release v0.5.1 (after T1–T3 + QA; human approval before publish)
+- T5: workspace-local spawn worktrees + briefs (dogfood wall fix) — `_worktrees/`, `_briefs/`
 
 **Out:** `ab read` "responded" marker (#113 option 3 — follow-up if guidance
 is insufficient), `sleeping` presence (deferred #102), federation (v1),
@@ -116,6 +117,23 @@ header v0.5.1 + `ab setup --force` regen; ONE release PR, **no tag/publish**
 (the producer does tag → OIDC → GHCR → Release after human approval). Release
 notes: wake echo fix, spawn model defaults, session discipline.
 
+### T5 — workspace-local spawn worktrees + briefs (dogfood) — MEDIUM
+
+The recurring external-directory wall: `ab spawn` creates worktrees in the OS
+temp dir, outside the workspace, so agents that need a sibling worktree (or a
+producer writing briefs in `%TEMP%`) stall on headless permission prompts.
+
+- **Worktrees**: create them at `<repo>/_worktrees/<agentId>` (gitignored)
+  instead of `%TEMP%/ab-worktrees/AgentBoard-<agentId>`; update
+  `spawnWorktreePlan`, the cleanup message, and the spawn help text.
+- **Briefs**: document the `<repo>/_briefs/<agentId>.md` convention
+  (gitignored) for producers; `-f` keeps working as-is (read at spawn time).
+- `.gitignore` entries are already added; keep hermetic tests for the new
+  path and existing spawn behavior.
+
+**Done when:** `ab spawn` puts the worktree under `_worktrees/`, briefs live
+in `_briefs/`, docs/help updated, tests green, QA PASS.
+
 ## Acceptance
 
 1. A wake prompt no longer causes the sender/unrelated sessions to act on
@@ -125,9 +143,11 @@ notes: wake echo fix, spawn model defaults, session discipline.
 3. Shipped guidance prevents duplicate responses from overlapping sessions
    (#113 subset), and the generated files are drift-clean.
 4. v0.5.1 released + verified (npm cli+mcp provenance, GHCR, Release).
+5. `ab spawn` creates worktrees under `<repo>/_worktrees/`; briefs use
+   `<repo>/_briefs/` — no external-directory prompts for agent work.
 
 ## Definition of Done
 
-T1–T3 merged with CI + QA sign-off; T4 released + verified; progress/done
-docs; `PROJECT_BRIEF.md` §7/§8 updated; #117/#119 closed and #113 resolved
-(or explicitly narrowed); worktrees cleaned.
+T1–T3 merged with CI + QA sign-off; T4 released + verified; T5 merged with
+QA; progress/done docs; `PROJECT_BRIEF.md` §7/§8 updated; #117/#119 closed and
+#113 resolved (or explicitly narrowed); worktrees cleaned.
