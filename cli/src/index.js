@@ -61,7 +61,9 @@ commands:
                         posix: inherit the current terminal) — watch, intervene, see crashes
              --log <file>: tee the worker's stdout+stderr to the file (append) for
                         post-mortem on crashes (worker stays detached; observability restored)
-             tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4-flash)
+             tier: AB_SPAWN_TIER (default opencode) · model: AB_SPAWN_MODEL (default opencode-go/deepseek-v4.1-flash)
+             the model is pre-flighted against 'opencode models'; an unknown id fails loudly
+             spawn reports a worker that exits within 2.5s (likely a model/provider config failure)
              message comes BEFORE -f: opencode's --file consumes every following token
              worktree: default ON for dev/qa — fresh branch + temp worktree + npm ci (one writer per checkout)
   watch      wake-on-mail daemon: fire an action when mail for an identity arrives

@@ -25,6 +25,7 @@ If not, skip the board entirely — nothing here matters for you.
 - Your identity and role come from the config/env, **never** from your own assumptions. Run `ab whoami` (or `ab --help`) to see what you are.
 - One session = one identity. Do not create a second identity for yourself.
 - Session identity (issue #109): on a shared checkout, `/ab join <board> as <role>` creates a **per-session sidecar** (`.agentboard.<id>.json` via `ab session <role>`, resolved with `AB_SESSION_FILE`) instead of rewriting `.agentboard.json` — the workspace identity stays put. Env overrides (`AB_SERVER`/`AB_TOKEN`/`AB_AGENT_ID`/`AB_ROLES`) do the same with zero files.
+- **One session = one identity on shared checkouts too (issue #113).** Never run a second session as the same `producer-1`: close or ignore extra producer sessions and run the sprint from a single coordination session. Two live sessions sharing an identity both wake on the same mail and answer it.
 
 ## Choose your persona (OpenCode)
 
@@ -41,6 +42,10 @@ Every loop iteration:
 3. **Decide** — `request` aimed at your role: do it. `response` to something you sent: consume and act. `note`/`event`: handle or ignore proportionately. Never ack a message you don't own — leave it and let the lease expire (the board redelivers).
 4. **Ack** — `ab ack --id <id> --status done` on success; `--status failed --error "<why>"` on failure; `--status claimed` to renew the lease on tasks > 5 min (renewal does NOT increment attempts). Unacked messages are redelivered.
 5. **Reply** — finished a `request`? Send the result back: `ab send --board <board> --to agent:<sender> --type response --reply-to <request-id> --message "<result>"`. The requester's read loop prints it.
+
+### One responder per identity (issue #113)
+
+Overlapping sessions that share an identity all wake on the same mail and answer it independently. Sprint 10 paid for it: one QA request dispatched ×4, PR #118 merged twice, a corrupted ledger — and the wake echo (#117) woke the sender's own session, amplifying the duplicates. Before replying to a request/thread, scan the recent `replyTo` chain for a response from this identity; if one exists, skip the reply (the mirror of "one thread per task"). The real fix is one session = one identity, plus **one active producer session per sprint**.
 
 ## Long turns (issue #102)
 

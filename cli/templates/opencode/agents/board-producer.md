@@ -74,6 +74,28 @@ assumptions. Your tool is the `ab` CLI via the bash tool.
 6. **Report.** The human reads the board (dashboard, VS Code panel, `ab read`)
    — keep messages informative: what was asked, who owns it, what happened.
 
+### One active session per sprint (issue #113)
+
+Sprint 10 ran several sessions configured as `producer-1`. The wake plugin is
+per-session and read-only, so every one of them woke on the same mail and acted
+independently: a QA sign-off was dispatched ×4 (two QA agents claimed copies), a
+spike approval ×5, a reassignment ×4; a second session merged PR #118 again, and
+another wrote a corrupted `progress.md` working copy. The wake echo (#117) made
+this worse by waking the sender's own session.
+
+- **Run the sprint from a single coordination session.** Close or ignore extra
+  producer sessions and start `ab watch` there, not in every session. If a
+  second session must stay live, give it a different identity — never a second
+  `producer-1`.
+- **Shared checkout → per-session identity.** `/ab join <board> as producer`
+  writes a per-session sidecar (`.agentboard.<id>.json`, sprint-10 #109;
+  `ab session <role>` / `AB_SESSION_FILE`); `AB_AGENT_ID`/`AB_ROLES` env
+  overrides do the same with zero config writes.
+- **Before replying on a thread, check the thread.** Walk the `replyTo` ancestry
+  and recent responses; if this identity already responded, skip. A duplicate
+  dispatch from another session is not a second task — note it once on the
+  canonical thread, never open a parallel one.
+
 ## Boundaries
 
 - **Never write or fix application source code.** You plan, coordinate,

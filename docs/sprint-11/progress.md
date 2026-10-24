@@ -6,10 +6,10 @@
 
 | Task | State | Evidence |
 |---|---|---|
-| T1 — wake echo (#117) | **PR open** | [PR #122](https://github.com/kennymudiaga/agent-board/pull/122) — spike recorded (§7.1); fan-out removed for process-observed single-session injection; 21/21 wake tests, 213/213 suite |
-| T2 — `ab spawn` defaults + instant exits (#119) | **dispatched** | request `sprint-11-t2-spawn119` (dev worker) — current model default, model pre-flight, exit-code evidence |
-| T3 — overlapping-session discipline (#113) | **queued** | docs/persona/SKILL + `ab setup` regen; dispatch after T2 lands (avoids setup-regen overlap while T2 runs) |
-| T4 — release v0.5.1 | **pending** | after T1–T3 + QA; tag/publish gated on human approval |
+| T1 — wake echo (#117) | **PR open (QA PASS)** | [PR #122](https://github.com/kennymudiaga/agent-board/pull/122) (head `d184ac7`) — spike recorded (§7.1): `PluginInput` has no session id, `session.list` is project-wide; fan-out removed for process-observed single-session injection, ambiguous multi-session skip with `AB_WAKE_SESSION`/tier-2 pointer; 21/21 wake tests, 213/213 suite; qa-t1 **PASS**. Docs-only merge with main resolved here. |
+| T2 — `ab spawn` defaults + instant exits (#119) | **MERGED + QA PASS** | PR [#120](https://github.com/kennymudiaga/agent-board/pull/120) (merge `2e299f3`): default model `opencode-go/deepseek-v4.1-flash`, model pre-flight with available ids, instant-exit trailer/warning; 214/214 tests; qa-t2 **PASS** at `28f007f` (independent repro of both behaviors); main CI green `40046337112`. Non-blocking: `cli/README.md` stale default line -> fold into T4. |
+| T3 — overlapping-session discipline (#113) | **MERGED + QA PASS** | PR [#121](https://github.com/kennymudiaga/agent-board/pull/121) (merge `e2f800c`): templates + `docs/conventions.md`, `ab setup --force` regen (11 files drift-clean), 207/207; qa-t3 **PASS** at `b6e5768`; `ab read` responded marker (option 3) deferred. |
+| T4 — release v0.5.1 | **pending** | after T1–T3 merged + QA; tag/publish gated on human approval |
 
 ## Verification record
 
@@ -18,11 +18,29 @@
   (`wake-core.js:174-188` fan-out; `cli/src/commands.js:660` stale default;
   #113 evidence from sprint 10). T1 + T2 dispatched; T3 sequenced after T2 to
   avoid two `ab setup --force` regenerations in flight.
-- **T1 delivered (dev-wake117, 2026-10-24):** PR #122. Spike (opencode 1.18.9):
-  `PluginInput` has no session id; hooks expose `properties.sessionID` only for
-  sessions this process handles; `session.list({directory})` is project-wide,
-  not "live" (the echo source); client calls in the plugin factory hang server
-  bootstrap. Fix: track process-observed sessions, inject into exactly one;
-  ambiguous multi-session → skip with `AB_WAKE_SESSION` / tier-2 pointer; prompt
-  carries an addressed-to marker + message id. Docs §7.1/§8.1. Evidence:
-  wake-core 21/21, `npm test` 213/213, `setup:check` clean. Awaiting review/QA.
+
+- **T2 delivered + QA (dev-spawn119 / qa-t2, 2026-10-24):** PR #120 merged
+  (`2e299f3`) — model default + pre-flight + instant-exit evidence; suite
+  **214/214**; qa-t2 PASS at `28f007f` (independent repro: stale id fails with
+  available ids; silent child leaves an exit trailer + early-exit warning;
+  healthy worker stays detached; win32 `--visible` unaffected). Non-blocking:
+  `cli/README.md` still documents the old default -> T4.
+
+- **T3 delivered + QA (dev-session113 / qa-t3, 2026-10-24):** PR #121 merged
+  (`e2f800c`) — one active producer session per sprint, per-session identity
+  via `ab session`/`AB_SESSION_FILE` (#109), pre-reply `replyTo` thread check;
+  sprint-10 evidence + wake-echo (#117) rationale in templates/conventions.
+  `ab setup --force` regen; `setup --check` clean (11 files); **207/207**
+  tests; qa-t3 PASS at `b6e5768`. Option 3 (`ab read` responded marker)
+  deferred. T3 ran in its own worktree, so its regen did not touch T2's tree.
+
+- **T1 delivered + QA (dev-wake117 / qa-t1, 2026-10-24):** PR #122 at
+  `d184ac7` — spike (opencode 1.18.9): `PluginInput` has no session id; hooks
+  expose `properties.sessionID` only for sessions this process handles;
+  `session.list({directory})` is project-wide, not "live" (the echo source);
+  client calls in the plugin factory hang server bootstrap. Fix: track
+  process-observed sessions, inject into exactly one; ambiguous multi-session
+  -> skip with `AB_WAKE_SESSION` / tier-2 pointer; prompt carries an
+  addressed-to marker + message id. Docs §7.1/§8.1. Evidence: wake-core
+  **21/21**, `npm test` **213/213**, `setup:check` clean; qa-t1 **PASS** at
+  `d184ac7`. Merged with main here (docs-only conflict in this ledger).

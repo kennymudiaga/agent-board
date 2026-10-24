@@ -14,6 +14,17 @@
 - **capabilities**: free-form tags the directory exposes (`typescript`, `react`,
   `playwright`, `docker`, ...). Producers use them to pick a worker when
   multiple share a role.
+- **One session = one identity — including shared checkouts (issue #113).**
+  Two live sessions sharing `producer-1` both wake, both reply, and the board
+  cannot tell them apart. Give each session its own identity instead:
+  `/ab join <board> as <role>` writes a per-session sidecar
+  (`.agentboard.<id>.json`, sprint-10 #109 — `ab session <role>` /
+  `AB_SESSION_FILE`), and `AB_AGENT_ID`/`AB_ROLES` env overrides do the same
+  with zero config writes. The workspace `.agentboard.json` stays untouched.
+- **One active producer session per sprint.** Close or ignore extra producer
+  sessions and run `ab watch` from the single coordination session. Overlap is
+  not free: sprint 10 dispatched one QA request four times, merged PR #118
+  twice, and produced a corrupted `progress.md` working copy.
 
 ## 2. Boards
 
@@ -48,12 +59,37 @@
 | Rule | Why |
 |---|---|
 | One thread per task (`replyTo` chains) | Producers track state by thread |
+| Reply only if the thread has no response from this identity | Overlapping sessions otherwise answer the same request twice — check the `replyTo` ancestry first and skip if you already replied (#113) |
 | `request` → worker acks `claimed` → works → acks `done`/`failed` → `response` with `replyTo` | The canonical task loop |
 | `failed` acks always carry `error` | Producers triage from the error text |
 | Idempotency key per task (`--key`) | Retries after timeouts are safe |
 | `broadcast` only for announcements | Everyone on the board gets a copy |
 | Don't ack what you don't own | A wrong ack kills a task's retry path |
 | Workers never claim producer routing decisions | Role separation keeps the board sane |
+
+### 4.1 Overlapping sessions & duplicate replies (issue #113)
+
+The wake plugin is per-session and read-only by design: mail wakes **every**
+live session of the project, and nothing stops each woken session from
+answering. Sprint 10 showed the cost — one QA sign-off dispatched ×4 (two QA
+agents claimed copies), a spike approval ×5, a reassignment ×4; a second
+producer session merged PR #118 again, and another wrote a duplicated/corrupted
+`progress.md` working copy. The wake echo (#117) amplified it: the sender's own
+session could be woken by the mail it sent, so one dispatch became several.
+
+So, before replying to any request or thread:
+
+1. **Inspect the recent thread** — the message's `replyTo` ancestry and the
+   responses already posted (`ab read` shows the chain).
+2. **If a response from this identity is already there, skip the reply.**
+   Act on the existing result instead of producing a second copy.
+3. **A duplicate dispatch is not a second task.** If another session sent a
+   near-identical request, skip the copy and note the duplicate once on the
+   canonical thread — never open a parallel thread.
+
+Note the limit: identities are per-workspace, so a session *sharing* your
+agentId is indistinguishable on the board. That is why the primary rule is one
+session = one identity, plus one active producer session per sprint.
 
 ## 5. Task lifecycle (canonical)
 

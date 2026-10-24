@@ -3,7 +3,7 @@
  * Every command accepts `json` (--json) for machine-readable stdout.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { CliError, apiCall } from './api.js';
@@ -657,8 +657,12 @@ export async function cmdAgents(flags, json) {
 // ------------------------------------------------------------------ spawn (issue #42 part 2)
 
 export const SPAWN_DEFAULT_AGENT = 'board-worker';
-export const SPAWN_DEFAULT_MODEL = 'opencode-go/deepseek-v4-flash';
+// Must be an id the provider currently offers — a stale id makes opencode exit
+// instantly with an empty log (issue #119). Pre-flighted against `opencode models`.
+export const SPAWN_DEFAULT_MODEL = 'opencode-go/deepseek-v4.1-flash';
 const SPAWN_OPPENCODE_TIER = 'opencode';
+/** How long `ab spawn` watches a fresh worker for an instant exit (#119). */
+export const SPAWN_EARLY_EXIT_WINDOW_MS = 2500;
 
 /**
  * Random hex suffix for default child agentIds (`<role>-<3-hex>`):
@@ -783,6 +787,121 @@ function execOpencode(args, opts = {}) {
 }
 
 /**
+ * Parse `opencode models` output: one `provider/model` id per line. Anything
+ * else (banners, ANSI colour, blank lines) is ignored so the parser survives
+ * cosmetic CLI output changes.
+ */
+export function parseModelList(stdout) {
+  return String(stdout ?? '')
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^[^\s/]+\/[^\s/]+$/.test(line));
+}
+
+/** Ask opencode which model ids this install/provider offers (injectable for tests). */
+export function listOpencodeModels(run = execOpencode) {
+  return parseModelList(run(['models'], { stdio: ['ignore', 'pipe', 'pipe'] }));
+}
+
+/** Env `AB_SPAWN_MODEL` > config `spawn.model` > built-in default (#119). */
+export function resolveSpawnModel(envModel, cfgModel) {
+  return envModel ?? cfgModel ?? SPAWN_DEFAULT_MODEL;
+}
+
+/**
+ * Pre-flight the chosen model against `opencode models` (issue #119), the same
+ * way `opencode --version` guards the binary. A model id the provider removed
+ * otherwise spawns a worker that exits instantly with a 0-byte `--log`, which
+ * is easily mistaken for a claim/lapse problem. Fail loudly and list the ids
+ * this install actually offers. If the list cannot be read we warn and let the
+ * spawn proceed — the worker surfaces its own error, and a transient listing
+ * failure must not block every spawn.
+ */
+export function preflightSpawnModel(model, { listModels = listOpencodeModels } = {}) {
+  let available;
+  try {
+    available = listModels();
+  } catch (e) {
+    const stderr = String(e?.stderr ?? e?.message ?? '').trim();
+    return {
+      model,
+      checked: false,
+      warning: `could not list opencode models${stderr ? `: ${stderr}` : ''}; skipping model pre-flight`,
+    };
+  }
+  if (!Array.isArray(available) || available.length === 0) {
+    return { model, checked: false, warning: 'opencode models returned no ids; skipping model pre-flight' };
+  }
+  if (!available.includes(model)) {
+    throw new CliError(
+      `spawn pre-flight: model "${model}" is not offered by this opencode install\n` +
+        `  available ids:\n${available.map((m) => `    ${m}`).join('\n')}\n` +
+        '  fix: set AB_SPAWN_MODEL (or config spawn.model) to one of the ids above.',
+    );
+  }
+  return { model, checked: true, available };
+}
+
+/**
+ * Watch a just-spawned worker for an instant exit (#119). Resolves with
+ * `{ code, signal }` (or `{ error }` for a spawn failure) when the child dies
+ * inside `windowMs`, or `null` once the window elapses — the healthy
+ * fire-and-forget case. The timer is intentionally NOT unref'd: the caller
+ * awaits it, so it must hold the (short) window open.
+ */
+export function awaitEarlyExit(child, windowMs = SPAWN_EARLY_EXIT_WINDOW_MS) {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const done = (info) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(info);
+    };
+    const timer = setTimeout(() => done(null), windowMs);
+    child.once('exit', (code, signal) => done({ code, signal }));
+    child.once('error', (error) => done({ error }));
+  });
+}
+
+/**
+ * Human-readable evidence for an instant worker exit (#119): the spawner must
+ * not report a healthy spawn when the worker died before it could heartbeat.
+ */
+export function formatEarlyExitWarning(
+  agentId,
+  info,
+  { windowMs = SPAWN_EARLY_EXIT_WINDOW_MS, logFile = null } = {},
+) {
+  const why = info.error
+    ? `failed to spawn: ${info.error.message ?? info.error}`
+    : `exit ${info.code ?? '-'}${info.signal ? ` (signal ${info.signal})` : ''}`;
+  return (
+    `warning: worker ${agentId} exited within ${windowMs / 1000}s (${why}) — likely a model/provider config failure\n` +
+    (logFile !== null ? `  see ${logFile}\n` : '  re-run with --log <file> to capture the worker output\n')
+  );
+}
+
+/**
+ * Append an exit trailer to `--log` (#119). opencode can die without writing a
+ * single byte, so a 0-byte log carries no crash evidence. The trailer records
+ * code/signal/elapsed; the child's own stderr already lands in the log via the
+ * spawn stdio/redirect. Best-effort: observability must never break the spawn.
+ */
+export function recordSpawnExit(child, { logFile = null, agentId = 'worker', startedAt = Date.now() } = {}) {
+  child.once('exit', (code, signal) => {
+    if (logFile === null) return;
+    const line = `\n[ab spawn] ${agentId} exited after ${Date.now() - startedAt}ms (code=${code ?? '-'}, signal=${signal ?? '-'})\n`;
+    try {
+      appendFileSync(logFile, line);
+    } catch {
+      // The spawn path already validates the log path; never crash on a late write.
+    }
+  });
+}
+
+/**
  * `ab spawn <role> [--board <b>] [--count <n>] [--brief <text>|-f <file>]
  *            [--agent-id <id>] [--dry-run]`
  * Spawns transient board workers per tier preference:
@@ -891,7 +1010,7 @@ export async function cmdSpawn(flags, json) {
     return;
   }
 
-  const model = process.env.AB_SPAWN_MODEL ?? cfg.spawn?.model ?? SPAWN_DEFAULT_MODEL;
+  const model = resolveSpawnModel(process.env.AB_SPAWN_MODEL, cfg.spawn?.model);
   const agent = process.env.AB_SPAWN_AGENT ?? cfg.spawn?.agent ?? SPAWN_DEFAULT_AGENT;
   const message = flags.brief ?? (
     file !== undefined
@@ -911,10 +1030,19 @@ export async function cmdSpawn(flags, json) {
         '  fix: install opencode and configure a provider token that supports non-interactive runs (opencode auth login), or set AB_SPAWN_TIER=vs-code for a human-invoked worker.',
       );
     }
+    // Model pre-flight (#119): a removed provider id exits the worker instantly.
+    const modelCheck = preflightSpawnModel(model);
+    if (modelCheck.warning) process.stderr.write(`spawn: ${modelCheck.warning}\n`);
   }
 
   const spawned = [];
   const commands = [];
+  // #119: track instant exits so a dead worker leaves evidence instead of
+  // looking like a silent claim lapse. win32 --visible starts a console via
+  // `start`, which returns immediately — the observed child is the launcher,
+  // not the worker — so there the window itself is the evidence.
+  const observeExit = !(visible && process.platform === 'win32');
+  const earlyExits = [];
   // One writer per checkout (#78): dev/qa workers default to their own
   // worktree; other roles (read-only/coordination) do not.
   const useWorktree = flags.worktree === true ? true : flags.noWorktree ? false : role === 'dev' || role === 'qa';
@@ -957,12 +1085,35 @@ export async function cmdSpawn(flags, json) {
       // agentboard-wake plugin bindable without a join round-trip.
       AB_BOARD: board,
     };
+    const startedAt = Date.now();
     const child = spawnWorker(args, childEnv, { visible, logFile });
+    if (observeExit) {
+      earlyExits.push({ agentId, promise: awaitEarlyExit(child) });
+      recordSpawnExit(child, { logFile, agentId, startedAt });
+    }
     child.on('error', (err) => {
       process.stderr.write(`error: failed to spawn worker ${agentId}: ${err.message}\n`);
     });
     child.unref(); // fire-and-forget: the worker heartbeats on its own
     spawned.push({ agentId, pid: child.pid, command: cmdline, ...(wt ? { worktree: wt.path, branch: wt.branch } : {}) });
+  }
+
+  // #119: wait out the short early-exit window (the worker stays detached; we
+  // only observe). A worker that dies at once is a config failure, and we say
+  // so instead of reporting a healthy spawn.
+  const earlyByAgent = new Map();
+  if (earlyExits.length > 0) {
+    const infos = await Promise.all(earlyExits.map((e) => e.promise));
+    earlyExits.forEach((e, i) => {
+      if (infos[i]) earlyByAgent.set(e.agentId, infos[i]);
+    });
+    for (const s of spawned) {
+      const info = earlyByAgent.get(s.agentId);
+      if (info) s.earlyExit = info.error ? { error: info.error.message } : { code: info.code, signal: info.signal };
+    }
+    for (const [agentId, info] of earlyByAgent) {
+      process.stderr.write(formatEarlyExitWarning(agentId, info, { logFile }));
+    }
   }
 
   if (json) {
