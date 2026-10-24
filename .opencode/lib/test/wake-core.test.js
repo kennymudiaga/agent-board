@@ -9,6 +9,7 @@ import {
   BoardWatcher,
   addressedTo,
   buildWakePrompt,
+  buildWakeTargets,
   createWakeController,
   defaultGlobalConfigPath,
   LazyResolver,
@@ -39,7 +40,7 @@ afterAll(async () => {
 // The controller reads process.env — isolate from the runner's ambient env
 // and from any real machine-wide global config (hermeticity, same class as
 // the cli.test.js AB_ENV_VARS hygiene).
-const AMBIENT = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_BOARD', 'AB_WAKE_RESOLVE_MS'];
+const AMBIENT = ['AB_SERVER', 'AB_TOKEN', 'AB_AGENT_ID', 'AB_BOARD', 'AB_WAKE_RESOLVE_MS', 'AB_WAKE_SESSION'];
 const savedEnv = {};
 beforeEach(() => {
   for (const k of AMBIENT) {
@@ -76,6 +77,16 @@ function makeTempDir() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll a predicate instead of sleeping a fixed amount (less flaky). */
+async function waitFor(predicate, timeoutMs = 4000, stepMs = 50) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error('waitFor timeout');
+    await sleep(stepMs);
+  }
+}
 
 /** Deterministic timer for LazyResolver tests: manual ticks, no real interval. */
 function fakeTimer() {
@@ -334,9 +345,8 @@ describe('createWakeController lazy binding (sprint 9 T1, #101)', () => {
     const client = {
       app: { log: async () => {} },
       session: {
-        list: async () => ({ data: [{ id: 'sess-1' }] }),
-        promptAsync: async ({ body }) => {
-          prompts.push(body.parts[0].text);
+        promptAsync: async ({ path, body }) => {
+          prompts.push({ id: path.id, text: body.parts[0].text });
         },
       },
     };
@@ -353,6 +363,7 @@ describe('createWakeController lazy binding (sprint 9 T1, #101)', () => {
         JSON.stringify({ server: baseUrl, token: TOKEN, agentId: 'qa-1', boards: ['wake-lazy'] }),
       );
       await sleep(400); // resolver picks it up; watcher starts + primes
+      ctl.noteSession('sess-1'); // session.created from the plugin's own event hook (#117)
 
       const sent = await api('POST', '/v1/boards/wake-lazy/messages', {
         agent: 'producer-1',
@@ -362,8 +373,9 @@ describe('createWakeController lazy binding (sprint 9 T1, #101)', () => {
 
       await sleep(700); // SSE/poll delivers -> wake prompt injected
       expect(prompts.length).toBeGreaterThan(0);
-      expect(prompts[0]).toContain(msg.id);
-      expect(prompts[0]).toContain('lazy wake me');
+      expect(prompts[0].id).toBe('sess-1');
+      expect(prompts[0].text).toContain(msg.id);
+      expect(prompts[0].text).toContain('lazy wake me');
 
       // Read-only: the message is still pending and claimable by the agent.
       const view = await api('GET', '/v1/boards/wake-lazy/messages?since=0', {});
@@ -375,5 +387,180 @@ describe('createWakeController lazy binding (sprint 9 T1, #101)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('session-scoped wake — never the sender, never a fan-out (#117)', () => {
+  const BOARD = 'wake-echo';
+
+  function setup(opts = {}) {
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, '.agentboard.json'),
+      JSON.stringify({ server: baseUrl, token: TOKEN, agentId: 'qa-1', boards: [BOARD] }),
+    );
+    const prompts = [];
+    const logs = [];
+    const client = {
+      app: { log: async () => {} },
+      session: {
+        // #117: the old fan-out source. If this is consulted, wake is broken.
+        list: async () => {
+          throw new Error('session.list must not be used for wake injection (#117)');
+        },
+        promptAsync: async ({ path, body }) => {
+          prompts.push({ id: path.id, text: body.parts[0].text });
+        },
+      },
+    };
+    const ctl = createWakeController({
+      client,
+      directory: dir,
+      log: (m) => logs.push(m),
+      intervalMs: 50,
+      pollMs: 100,
+      ...opts,
+    });
+    return { dir, prompts, logs, ctl };
+  }
+
+  async function startPrimed(ctl, logs) {
+    ctl.start();
+    await waitFor(() => logs.some((l) => l.startsWith('watching board')));
+    await sleep(400); // let the watcher prime its head (pre-existing mail never fires)
+  }
+
+  async function sendMail(text) {
+    const sent = await api('POST', `/v1/boards/${BOARD}/messages`, {
+      agent: 'producer-1',
+      body: { to: 'agent:qa-1', type: 'request', payload: { text } },
+    });
+    return (await sent.json()).message;
+  }
+
+  beforeEach(async () => {
+    await api('POST', '/v1/heartbeat', {
+      body: { agentId: 'qa-1', roles: ['qa'], boards: [BOARD], interval: 15 },
+    });
+  });
+
+  it('wakes the recipient session, not the sender session in the same project', async () => {
+    const { dir, prompts, logs, ctl } = setup();
+    try {
+      ctl.noteSession('sess-qa'); // observed via this process's session.created hook
+      await startPrimed(ctl, logs);
+      // The sender (producer-1) has a session in the project too — but this
+      // process never observed it, so it is not a wake candidate.
+      const msg = await sendMail('echo check');
+
+      await waitFor(() => prompts.length > 0);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0].id).toBe('sess-qa');
+      expect(prompts[0].id).not.toBe('sess-producer');
+      expect(prompts[0].text).toContain(msg.id);
+      expect(prompts[0].text).toContain('addressed to qa-1');
+      expect(prompts[0].text).toContain('if you are not qa-1, ignore');
+      expect(logs.some((l) => l.includes('injection failed'))).toBe(false);
+    } finally {
+      ctl.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('several live sessions in one process are ambiguous: no injection, actionable warning', async () => {
+    const { dir, prompts, logs, ctl } = setup();
+    try {
+      ctl.noteSession('sess-a');
+      ctl.noteSession('sess-b');
+      await startPrimed(ctl, logs);
+      await sendMail('ambiguous check');
+
+      await waitFor(() => logs.some((l) => l.includes('ambiguous wake')));
+      await sleep(300); // give a (wrong) fan-out time to happen
+      expect(prompts).toEqual([]);
+      const warning = logs.find((l) => l.includes('ambiguous wake'));
+      expect(warning).toContain('sess-a');
+      expect(warning).toContain('sess-b');
+      expect(warning).toContain('ab watch --opencode');
+    } finally {
+      ctl.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AB_WAKE_SESSION pins the target even when several sessions are live', async () => {
+    const { dir, prompts, logs, ctl } = setup({ sessionId: 'sess-pin' });
+    try {
+      ctl.noteSession('sess-a');
+      ctl.noteSession('sess-b');
+      await startPrimed(ctl, logs);
+      const msg = await sendMail('pinned check');
+
+      await waitFor(() => prompts.length > 0);
+      expect(prompts.map((p) => p.id)).toEqual(['sess-pin']);
+      expect(prompts[0].text).toContain(msg.id);
+    } finally {
+      ctl.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no observed session skips the wake instead of guessing', async () => {
+    const { dir, prompts, logs, ctl } = setup();
+    try {
+      await startPrimed(ctl, logs);
+      await sendMail('nobody home');
+
+      await waitFor(() => logs.some((l) => l.includes('no live session to wake')));
+      await sleep(300);
+      expect(prompts).toEqual([]);
+    } finally {
+      ctl.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('buildWakeTargets: pin wins, one is chosen, several are ambiguous, stale expires', () => {
+    const sessions = new Map([
+      ['s-a', 0],
+      ['s-b', 500],
+    ]);
+    expect(buildWakeTargets({ pinnedId: 'pin', sessions, now: 2_000, ttlMs: 10_000 })).toEqual({
+      id: 'pin',
+      reason: 'pinned',
+      ids: ['pin'],
+    });
+
+    const one = new Map([['s-a', 1_000]]);
+    expect(buildWakeTargets({ pinnedId: null, sessions: one, now: 2_000, ttlMs: 10_000 })).toEqual({
+      id: 's-a',
+      reason: 'single-live-session',
+      ids: ['s-a'],
+    });
+
+    const amb = buildWakeTargets({ pinnedId: null, sessions, now: 2_000, ttlMs: 10_000 });
+    expect(amb.id).toBeNull();
+    expect(amb.reason).toBe('ambiguous');
+    expect(amb.ids).toEqual(['s-a', 's-b']);
+
+    // Only s-b is inside the TTL window -> unambiguously wake it.
+    const fresh = buildWakeTargets({ pinnedId: null, sessions, now: 10_200, ttlMs: 10_000 });
+    expect(fresh).toEqual({ id: 's-b', reason: 'single-live-session', ids: ['s-b'] });
+
+    expect(buildWakeTargets({ pinnedId: null, sessions: new Map(), now: 1, ttlMs: 10_000 })).toEqual({
+      id: null,
+      reason: 'no-live-session',
+      ids: [],
+    });
+  });
+
+  it('buildWakePrompt carries the recipient marker (#117)', () => {
+    const p = buildWakePrompt(
+      { id: 'msg_x', board: 'b', from: 'producer-1', to: 'agent:qa-1', type: 'request', payload: { text: 'hi' } },
+      'qa-1',
+    );
+    expect(p).toContain('addressed to qa-1');
+    expect(p).toContain('if you are not qa-1, ignore this prompt');
+    expect(p).toContain('msg_x');
   });
 });
