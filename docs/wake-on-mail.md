@@ -151,6 +151,11 @@ truth (wake is a best-effort nudge, never required for delivery).
 - **Dedupe** on message id; never ack for the agent; never auto-reply.
 - **Token burn**: filters (only `agent:`/`role:` mail to me, once per id)
   prevent wake loops reacting to the woken agent's own messages.
+- **Never fan out** (§8.1, #117): the watcher's guard is per identity, but the
+  *injection* must be too. A project-wide prompt list includes the sender's
+  session (echo) and historical sessions. Wake one session or none.
+- **No client calls in the plugin factory** (§7.1): the server is still
+  bootstrapping; `session.list` there hung a run past 5 minutes.
 - **Command-on-arrival = local execution**: `ab watch` actions are explicit
   opt-in config; briefs pass via file/env (like `ab spawn -f`), never shell-
   interpolated from message text.
@@ -176,29 +181,71 @@ delivery detail, federation, encryption — wake-on-mail slots in as T5.
    `client.session.promptAsync({ path: { id }, body: { parts: [{ type:
    'text', text }], noReply? } })` works (POST `/session/{id}/prompt_async` —
    body shape verified against the SDK types; `ab watch --opencode` sends this
-   exact shape). `client.session.list({ query: { directory } })` enumerates
-   live sessions to inject into, and `client.event.subscribe()` streams
-   `session.created` / `session.idle` / `session.updated` events for tracking.
+   exact shape). `client.event.subscribe()` streams `session.created` /
+   `session.idle` / `session.updated` events for tracking.
    The 1.18.x plugin hooks surface has **no `session.idle` hook** (chat/tool/
    permission/command only) — the background watcher loop + prompt injection
    from the plugin's `server()` entry is the working shape, exactly as §1
    predicted. Plugins auto-load from `.opencode/plugin/` (project) or via the
    `plugin` array in `opencode.json`.
+   **Correction (sprint 11 T1, #117):** `client.session.list({ query:
+   { directory } })` does **not** mean "live sessions to inject into" — it is
+   every session of the project, other processes' and historical ones
+   included, which is why the original fan-out echoed a sender's own mail back
+   into its session. See §7.1 for the "can the plugin address its own session?"
+   spike and §8 for the corrected injection rule.
 2. Should `ab watch` heartbeat on behalf of a sleeping agent (keep presence
    "online") or should presence go `sleeping`? (Lean: `sleeping` + `wake:*`
    caps tells producers more truthfully.)
 3. Track upstream: VS Code system-initiated chat requests — file/upvote a
    feature request so interactive-chat wake becomes possible later.
 
+### 7.1 Can the plugin address its **own** session? (spike, sprint 11 T1 — #117)
+
+**Answer: no — not directly.** The plugin instance is server/project-scoped,
+not per-session. Probe method (opencode **1.18.9**, Windows): temporary
+`console.log` probes in `.opencode/plugins/agentboard-wake.js` (reverted
+before commit), then a nested `opencode run --model
+opencode-go/deepseek-v4.1-flash "Reply OK" --dir <worktree>` to exercise the
+plugin in a real server. Observed:
+
+- **`PluginInput` keys:** `client, project, worktree, directory,
+  experimental_workspace, serverUrl, $` — **no session id** (`input.sessionID`
+  / `input.session` are `undefined`).
+- **Hooks do carry ids, but only per activity — not "my session":**
+  - `chat.message` input: `{ sessionID, agent, model, messageID, variant }`;
+  - `event` payloads for `session.created`, `session.updated`, `session.status`,
+    `session.idle`, `message.updated`, `message.part.*` carry
+    `properties.sessionID`.
+  These fire for whichever session *this process* is handling. In the probe,
+  the single `opencode run` session (`ses_e94a…`) arrived this way and could
+  be targeted by `promptAsync({ path: { id } })`.
+- **`client.session.list({ query: { directory } })` is not a live-session
+  list.** It returns the project's sessions — including sessions created by
+  *other* opencode processes and historical ones. That per-project fan-out is
+  the wake echo: the recipient's plugin prompted the sender's session with the
+  sender's own outgoing mail (#117).
+- **Do not call `client` inside the plugin factory.** Adding
+  `await client.session.list(...)` before returning the hooks made the nested
+  `opencode run` hang past 5 minutes (no error, no further prompts); the same
+  run completed normally once the call was removed. The server is still
+  bootstrapping while plugins load — a callback into it blocks. Only call
+  client APIs from hooks/background loops after the factory returns.
+
+**Consequence for the fix:** "the current session" is only addressable via
+(1) ids this process observed through its own hooks, or (2) an explicit pin.
+Both are now supported; the blind fan-out is gone (§8).
+
 ## 8. The opencode plugin (sprint 5 T2 — `.opencode/plugin/`)
 
-`agentboard-wake` (`.opencode/plugin/agentboard-wake.js`, core in
+`agentboard-wake` (`.opencode/plugins/agentboard-wake.js`, core in
 `wake-core.js`): a background `BoardWatcher` long-polls the board (SSE push,
 polling fallback — read-only, never claims/acks, dedupe on id, wake-loop
-guard) and injects a wake prompt into every live session of the project:
+guard) and injects a wake prompt into **the one session that should act**:
 
 ```
 [agentboard wake] message <id> on board <board> (replies to <id>)
+addressed to <identity> — if you are not <identity>, ignore this prompt
 from <sender> → <to> [<type>]
 
 <text>
@@ -209,7 +256,48 @@ with `ab read`, act on it, reply with `ab send --type response --reply-to
 ```
 
 Config (env wins, else the workspace `.agentboard.json`, read-only):
-`AB_SERVER` / `AB_TOKEN` / `AB_AGENT_ID` / `AB_BOARD`. The agent declares
-`wake:opencode-session` in its heartbeat capabilities. Demo: see the sprint-5
-T2 PR (a headless `opencode serve` session is woken by an incoming board
-request and answers it via `ab`).
+`AB_SERVER` / `AB_TOKEN` / `AB_AGENT_ID` / `AB_BOARD`, plus
+`AB_WAKE_SESSION` (optional injection pin, below). The agent declares
+`wake:opencode-session` in its heartbeat capabilities.
+
+### 8.1 Session-scoped injection — the wake echo fix (sprint 11 T1, #117)
+
+What the plugin does **not** do anymore: list every session of the project and
+prompt all of them. That fan-out woke the *sender* with its own outgoing mail
+(the recipient's watcher fired correctly, but its injection reached every
+session in the directory), and with shared identities it amplified duplicate
+responses (#113). The fix, given §7.1's finding that a plugin cannot name its
+own session:
+
+| Situation | Behavior |
+|---|---|
+| `AB_WAKE_SESSION=<session-id>` set | Inject **only** into that session (authoritative pin — the deterministic escape hatch). |
+| Exactly one session observed by this process | Inject into it. The watcher only fires for mail addressed to this identity, so that session is the actor. |
+| Several sessions observed by this process | **Ambiguous → skip.** Log which ids are live and point at `AB_WAKE_SESSION` / tier-2 `ab watch --opencode <session-id>`. Never fan out: with no per-session identity we cannot tell sender from recipient, and a wrong wake is worse than a missed one (the message stays on the board). |
+| No observed session | Skip with a log; wake is best-effort (§4). |
+
+Which sessions count as "observed"? Only ids this process's own hooks saw
+(`session.created`, `session.updated`, `message.*`, `chat.message`), tracked by
+`createWakeController().noteSession(id)` and expired after 24 h of inactivity
+(`DEFAULT_SESSION_TTL_MS`). A session belonging to another opencode process —
+the usual sender in a shared checkout — never enters that set, so it can never
+be woken. The prompt still carries an explicit recipient marker + message id,
+so even a mis-delivered prompt is inert.
+
+Operational notes:
+
+- Multiple tabs in **one** `opencode serve`/TUI process are indistinguishable
+  to the plugin → wake is skipped rather than guessed. Pin the intended tab
+  with `AB_WAKE_SESSION`, or use tier-2 `ab watch --opencode <session-id>`
+  (§3.1). Per-session identities (#109) plus one active session per identity
+  (sprint 11 T3) keep the common case at one live session.
+- The plugin factory must not call `client` APIs — it deadlocks server
+  bootstrap (§7.1).
+
+Hermetic coverage lives in `.opencode/lib/test/wake-core.test.js`:
+sender-session-not-woken, recipient-woken, ambiguous-multi-session-skip,
+`AB_WAKE_SESSION` pin, no-live-session skip, and the `buildWakeTargets` unit
+matrix (pin / one / several / TTL).
+
+Demo: see the sprint-5 T2 PR (a headless `opencode serve` session is woken by
+an incoming board request and answers it via `ab`).

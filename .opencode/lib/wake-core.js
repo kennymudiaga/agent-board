@@ -13,7 +13,8 @@ import { join } from 'node:path';
  * wake-loop guard (the watched identity's own mail never fires).
  *
  * The plugin entry (agentboard-wake.js) wires this to `input.client` and
- * injects wake prompts into live opencode sessions.
+ * injects a wake prompt into the single session that should act — never the
+ * sender, never every session of the project (sprint 11 T1, #117).
  */
 
 /** Wake-loop guard + filter: agent:/role: mail to the watched identity, never its own. */
@@ -35,17 +36,55 @@ export function wakeResolveMs(env = process.env, fallback = 5000) {
   return Number.isFinite(n) && n >= 1 ? n : fallback;
 }
 
-/** The injection text: message id, board, thread refs, sender, text. */
-export function buildWakePrompt(m) {
+/**
+ * The injection text: recipient marker, message id, board, thread refs, sender,
+ * text. The marker (sprint 11 T1, #117) is belt-and-braces: even if a prompt
+ * reaches the wrong session (see `buildWakeTargets`), a non-recipient is told
+ * to ignore it — the message id keeps it traceable.
+ */
+export function buildWakePrompt(m, forId) {
   const text = m.payload && typeof m.payload.text === 'string' ? m.payload.text : JSON.stringify(m.payload ?? null);
   const thread = m.replyTo ? ` (replies to ${m.replyTo})` : '';
+  const marker = forId ? `addressed to ${forId} — if you are not ${forId}, ignore this prompt\n` : '';
   return (
     `[agentboard wake] message ${m.id} on board ${m.board}${thread}\n` +
+    marker +
     `from ${m.from} → ${m.to} [${m.type}]\n` +
     `\n${text}\n\n` +
     'A board message is addressed to you. If it is a request/question, pick it up with `ab read`, act on it, ' +
     'reply with `ab send --type response --reply-to <id>`, and ack — per docs/conventions.md §5.'
   );
+}
+
+/**
+ * Pick the ONE session a wake prompt may be injected into (sprint 11 T1,
+ * issue #117 — "wake echo"). The plugin API cannot address "its own" session:
+ * `PluginInput` is server/project-scoped (`client, project, worktree,
+ * directory, experimental_workspace, serverUrl, $` — no session id; spike
+ * evidence in docs/wake-on-mail.md §7.1), and `client.session.list()` returns
+ * sessions from the whole project, senders' included. Fanning out to that list
+ * is exactly the echo: the sender's session is prompted with mail it sent.
+ *
+ * Rule instead:
+ *   - an explicit pin (`AB_WAKE_SESSION`) is authoritative — inject only there;
+ *   - otherwise only sessions this plugin process has actually observed
+ *     (`noteSession` from its own event hooks) count as live, so sessions from
+ *     other opencode processes (the usual sender) can never be targeted;
+ *   - zero live sessions → skip (tier-2 `ab watch --opencode` is the fallback);
+ *   - more than one → ambiguous → skip with a warning (never fan out). With
+ *     several sessions in one process we cannot tell sender from recipient, and
+ *     a wrong wake is worse than a missed one (the message waits on the board).
+ *
+ * Returns `{ id }` when unambiguous, else `{ id: null, reason, ids }`.
+ */
+export function buildWakeTargets({ pinnedId, sessions, now = Date.now(), ttlMs }) {
+  if (pinnedId) return { id: pinnedId, reason: 'pinned', ids: [pinnedId] };
+  const ids = [...sessions.entries()]
+    .filter(([, at]) => ttlMs <= 0 || now - at <= ttlMs)
+    .map(([id]) => id);
+  if (ids.length === 0) return { id: null, reason: 'no-live-session', ids };
+  if (ids.length > 1) return { id: null, reason: 'ambiguous', ids };
+  return { id: ids[0], reason: 'single-live-session', ids };
 }
 
 /**
@@ -147,15 +186,40 @@ export class LazyResolver {
   }
 }
 
+export const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Plugin wiring (sprint 9 T1, #101), factored for hermetic tests: owns the
- * LazyResolver + BoardWatcher lifecycle and the injection into live opencode
- * sessions. `start()` begins the lazy loop (inert until a config appears);
- * `stop()` tears everything down. The plugin entry (agentboard-wake.js) is a
- * thin wrapper over this.
+ * LazyResolver + BoardWatcher lifecycle and the injection into the one session
+ * that should act (sprint 11 T1, #117 — no project-wide fan-out).
+ *
+ * `noteSession(id)` is fed by the plugin's own event hooks (`session.created`
+ * / `session.updated` / `chat.message`); those events only fire in the process
+ * that owns the session, which is what keeps a *sender in another process* out
+ * of the target set. `sessionId` (default `AB_WAKE_SESSION`) pins injection to
+ * one session explicitly — the supported way to wake when several sessions
+ * share this process.
+ *
+ * `start()` begins the lazy loop (inert until a config appears); `stop()`
+ * tears everything down. The plugin entry (agentboard-wake.js) is a thin
+ * wrapper over this.
  */
-export function createWakeController({ client, directory, log = () => {}, intervalMs = 5000, pollMs = 5000 }) {
+export function createWakeController({
+  client,
+  directory,
+  log = () => {},
+  intervalMs = 5000,
+  pollMs = 5000,
+  sessionId = process.env.AB_WAKE_SESSION || null,
+  sessionTtlMs = DEFAULT_SESSION_TTL_MS,
+  now = () => Date.now(),
+}) {
   let watcher = null;
+  /** session id -> last time this process observed activity for it. */
+  const sessions = new Map();
+  const noteSession = (id) => {
+    if (id) sessions.set(id, now());
+  };
 
   const stopWatcher = () => {
     if (watcher) {
@@ -172,16 +236,28 @@ export function createWakeController({ client, directory, log = () => {}, interv
       pollMs,
       onLog: log,
       onMail: async (m) => {
-        const text = buildWakePrompt(m);
-        log(`injecting wake prompt into live sessions (${m.id} ${m.from} -> ${m.to})`);
-        try {
-          const sessions = await client.session.list({ query: { directory } });
-          for (const s of sessions?.data ?? []) {
-            await client.session.promptAsync({
-              path: { id: s.id },
-              body: { parts: [{ type: 'text', text }] },
-            });
+        const target = buildWakeTargets({ pinnedId: sessionId, sessions, now: now(), ttlMs: sessionTtlMs });
+        if (!target.id) {
+          if (target.reason === 'ambiguous') {
+            log(
+              `ambiguous wake for ${m.id}: ${target.ids.length} live sessions in this process (${target.ids.join(', ')}) — ` +
+                'NOT injecting (a wrong wake would hit the sender); pin one with AB_WAKE_SESSION or use ' +
+                'tier-2 `ab watch --opencode <session-id>`',
+            );
+          } else {
+            log(
+              `no live session to wake for ${m.id} (${m.from} -> ${m.to}) — skipping; the message stays on the board ` +
+                '(tier-2 fallback: `ab watch --opencode <session-id>`)',
+            );
           }
+          return;
+        }
+        log(`injecting wake prompt into session ${target.id} (${m.id} ${m.from} -> ${m.to})`);
+        try {
+          await client.session.promptAsync({
+            path: { id: target.id },
+            body: { parts: [{ type: 'text', text: buildWakePrompt(m, cfg.agentId) }] },
+          });
         } catch (e) {
           log(`injection failed: ${e.message}`);
         }
@@ -216,6 +292,9 @@ export function createWakeController({ client, directory, log = () => {}, interv
       resolver.stop();
       stopWatcher();
     },
+    /** Feed from the plugin's event hooks — the ONLY source of live sessions. */
+    noteSession,
+    knownSessions: () => [...sessions.keys()],
   };
 }
 
