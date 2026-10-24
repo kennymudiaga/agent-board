@@ -19,6 +19,7 @@ import {
   recordSpawnExit,
   resolveSpawnModel,
   spawnWorker,
+  spawnWorktreePlan,
 } from '../src/commands.js';
 
 const TOKEN = 'cli-test-token';
@@ -1187,6 +1188,17 @@ describe('ab CLI against the reference server', () => {
     }
   });
 
+  it('spawnWorktreePlan targets <repo>/_worktrees/<agentId> for dev/qa (T5)', () => {
+    const repo = join(tmpdir(), 'ab-plan-repo');
+    for (const agentId of ['dev-abc123', 'qa-def456']) {
+      const plan = spawnWorktreePlan(repo, agentId);
+      expect(plan.branch).toBe(`spawn/${agentId}`);
+      expect(plan.path).toBe(join(repo, '_worktrees', agentId));
+      // Never the old OS-temp layout that tripped headless permission prompts.
+      expect(plan.path).not.toContain('ab-worktrees');
+    }
+  });
+
   it('spawn --worktree plans a fresh branch + worktree for dev/qa; --no-worktree opts out (#78)', async () => {
     const dir = makeWorkspace();
     try {
@@ -1198,7 +1210,8 @@ describe('ab CLI against the reference server', () => {
       const planned = await runCli(['spawn', 'qa', '--board', 'sprint-8', '--dry-run'], { cwd: dir });
       expect(planned.code).toBe(0, planned.stderr);
       expect(planned.stdout).toMatch(/git worktree add -b spawn\/qa-[0-9a-f]{6} /);
-      expect(planned.stdout).toContain('ab-worktrees');
+      expect(planned.stdout).toContain(join(dir, '_worktrees'));
+      expect(planned.stdout).not.toContain('ab-worktrees');
       expect(planned.stdout).toContain('worktrees planned');
 
       // Opt-out keeps the old shape (spawner cwd).
@@ -1229,6 +1242,7 @@ describe('ab CLI against the reference server', () => {
       const wt = createSpawnWorktree(repo, 'qa-live1');
       try {
         expect(wt.branch).toBe('spawn/qa-live1');
+        expect(wt.path).toBe(join(repo, '_worktrees', 'qa-live1'));
         expect(existsSync(join(wt.path, 'file.txt'))).toBe(true);
         const branches = execFileSync('git', ['branch', '--list', wt.branch], { cwd: repo, encoding: 'utf8' });
         expect(branches).toContain('spawn/qa-live1');

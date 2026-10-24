@@ -65,7 +65,10 @@ commands:
              the model is pre-flighted against 'opencode models'; an unknown id fails loudly
              spawn reports a worker that exits within 2.5s (likely a model/provider config failure)
              message comes BEFORE -f: opencode's --file consumes every following token
-             worktree: default ON for dev/qa — fresh branch + temp worktree + npm ci (one writer per checkout)
+             worktree: default ON for dev/qa — fresh branch + workspace-local _worktrees/<agentId>
+                       + npm ci (one writer per checkout; gitignored, no external-directory prompts)
+             briefs:   producers write _briefs/<agentId>.md (gitignored) and pass it with -f
+                       (read at spawn time, so the worker's worktree receives the same brief)
   watch      wake-on-mail daemon: fire an action when mail for an identity arrives
              ab watch --board <name> [--for <agent-id>] [--exec <cmd>] [--opencode <session-id>]
              [--notify] [--once] [--interval <sec>] [--since <seq>]
