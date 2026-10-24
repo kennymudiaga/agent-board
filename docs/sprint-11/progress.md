@@ -10,6 +10,7 @@
 | T2 — `ab spawn` defaults + instant exits (#119) | **MERGED + QA PASS** | PR [#120](https://github.com/kennymudiaga/agent-board/pull/120) (merge `2e299f3`): default model `opencode-go/deepseek-v4.1-flash`, model pre-flight with available ids, instant-exit trailer/warning; 214/214 tests; qa-t2 **PASS** at `28f007f` (independent repro of both behaviors); main CI green `40046337112`. Non-blocking: `cli/README.md` stale default line -> fold into T4. |
 | T3 — overlapping-session discipline (#113) | **MERGED + QA PASS** | PR [#121](https://github.com/kennymudiaga/agent-board/pull/121) (merge `e2f800c`): templates + `docs/conventions.md`, `ab setup --force` regen (11 files drift-clean), 207/207; qa-t3 **PASS** at `b6e5768`; `ab read` responded marker (option 3) deferred. |
 | T4 — release v0.5.1 | **PR open (ready for QA)** | [PR #123](https://github.com/kennymudiaga/agent-board/pull/123) (head `69faf23`) — versions → 0.5.1 (root + `cli/` + `server/` + `mcp/` + `vscode-ext/` + lock), `spec.md` header v0.5.1 (changelog #117/#119/#113), `ab setup --force` regen (11 files, `--check` clean), stale `cli/README.md` spawn default fixed (qa-t2 finding); suite **220/220**, build clean; **no tag / no publish** (producer + human own tag → OIDC → GHCR → Release). |
+| T5 — workspace-local worktrees + briefs | **dispatched** | request `sprint-11-t5-worktrees` (dev-worktrees): `_worktrees/<agentId>` + `_briefs/` convention, help/docs/tests; `.gitignore` already updated |
 
 ## Verification record
 
