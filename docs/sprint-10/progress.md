@@ -1,6 +1,6 @@
 # Sprint 10 — Progress (Identity, CLI Hardening, Encryption & A2A Events)
 
-> Updated: 2026-10-05. Plan: `docs/sprint-10/plan.md`.
+> Updated: 2026-10-24. Plan: `docs/sprint-10/plan.md`.
 
 ## Status
 
@@ -10,7 +10,7 @@
 | T2 — CLI hardening bundle (#110 + follow-ups) | **MERGED + QA PASS** | same PR #114: win32 `--exec` split guard (`execSplitWarnings`, non-fatal) + docs, `AB_WAKE_RESOLVE_MS` NaN coercion, `--log` missing-parent-dir friendly error; hermetic tests. #110 closed. |
 | T3 — at-rest encryption (spec §10.7) | **MERGED + QA PASS** | PR [#112](https://github.com/kennymudiaga/agent-board/pull/112) (`feat/encryption-at-rest`, merge `3bec8895`, #111): field-level AES-256-GCM behind `AB_ENCRYPTION_KEY` (spike: SQLCipher EBADPLATFORM on win32 → rejected); 5 hermetic tests; `docs/encryption-at-rest.md` + spec §10.7. qa-1 **APPROVE** at `c020049` (crypto.ts envelope/scrypt/pass-through/tamper + db.ts keyed paths verified). #111 closed. |
 | T4 — A2A `tasks/query` + SSE (docs/a2a.md) | **MERGED + QA PASS** | PR [#115](https://github.com/kennymudiaga/agent-board/pull/115) (`feat/a2a-query-sse`, merge `b22c1bc`) — `tasks/query` (filters) + `GET /a2a/:agentId/events` SSE (created/updated/canceled, per-agent-token auth, emit-time W4 workspace scoping); 3 hermetic tests incl. cross-workspace negative; 198/199 suite. qa-1 **PASS** at `7d24227`. |
-| T5 — release v0.5.0 | **PR OPEN (review/QA pending)** | PR [#118](https://github.com/kennymudiaga/agent-board/pull/118) (`spawn/dev-t5resume`, head `e45feaf`, request #233): versions → 0.5.0 (root+cli+server+mcp+vscode-ext) + spec header/§10.7 shipped-encryption record + `ab setup --force` regen (11 files) + **ci.yml GHCR fix (#116)** — main-push GHCR publish removed; `release.yml` stays the single publisher (#100). Verified: 207/207 tests (19 files), build clean, `setup --check` up to date. **No tag/publish** — producer + human own tag → OIDC publish → GHCR → release notes. |
+| T5 — release v0.5.0 | **MERGED + QA PASS** | PR [#118](https://github.com/kennymudiaga/agent-board/pull/118) (merge `6d76192`, head `27bdaa8`, request #233): versions → 0.5.0 (root+cli+server+mcp/vscode-ext package.json + lock) + `spec.md` header v0.5.0 (the §10.7 shipped-encryption record landed with #112, not here) + `ab setup --force` regen (11 files, `--check` clean) + **ci.yml GHCR fix (#116)** — main-push GHCR publish removed; `release.yml` stays the single publisher (#100). qa-t5 **PASS** at `27bdaa8` (independent worktree): clean `npm ci` → 207/207 tests (19 files), build clean, setup `--check` up to date, 20-file diff all in scope, no tag/publish; main CI green at run `40043396125`. **No tag/publish yet** — tag → OIDC publish → GHCR → release notes await human approval. |
 
 ## Verification record
 
@@ -70,16 +70,40 @@
   v0.5.0 release). Dead T1/T2/T4 requests purged by the producer session
   handling the ledger (deliveries on record via PRs/responses).
 
-- **T5 release prep (dev-t5b, 2026-10-05):** PR
+- **T5 release prep (dev-t5b, 2026-10-24):** PR
   [#118](https://github.com/kennymudiaga/agent-board/pull/118) at
-  `e45feaf` — resumes the interrupted worker's preserved commit `920e928`:
-  versions 0.5.0 (root+cli+server+mcp+vscode-ext, lock synced), spec header
-  v0.5.0 + §10.7 shipped field-level AES-256-GCM record, `ab setup --force`
+  `27bdaa8` — resumes the interrupted worker's preserved commit `920e928`
+  after an OpenCode crash mid-turn (worktree preserved, WIP committed
+  before resuming): versions 0.5.0 (root+cli+server+mcp+vscode-ext, lock
+  synced), `spec.md` header v0.5.0 (the §10.7 shipped-encryption record
+  landed with #112; this PR only moves the header), `ab setup --force`
   regen (11 files, `--check` clean). **#116 fix:** main-push GHCR step
   removed after confirming the failure in run `37256426643` (`denied:
   installation not allowed to Write organization package`); `ci.yml` docker
   job is build-only and `release.yml` `ghcr-push` remains the single
-  publisher (#100). Evidence: `npm test` **207/207** (19 files),
-  `npm run build` clean, `ab setup --check` up to date. **No tag/publish
-  performed** — producer + human own tag → OIDC publish → GHCR → release
-  notes.
+  publisher (#100). Verified: `npm test` **207/207** (19 files),
+  `npm run build` clean, `ab setup --check` up to date.
+
+- **T5 QA + merge (qa-t5 / producer-1, 2026-10-24):** qa-t5 **PASS** at
+  `27bdaa8` (independent worktree at the PR head): version/lock/header
+  consistency, setup-drift clean, `ci.yml` build-only + `release.yml`
+  single publisher, 20-file diff all in scope, no tag/publish, clean
+  `npm ci` → 207/207 + build clean. Non-blocking nits folded into this
+  ledger (the §10.7 overclaim and stale head reference are corrected
+  above). Merged as `6d76192` (regular merge); **main CI green** at run
+  `40043396125` — the #116 fix verified on main. **No tag/publish
+  yet** — tag → OIDC publish → GHCR → release notes await human approval.
+
+- **T5 interrupt/resume finding (producer-1, 2026-10-24):** the local
+  board server had been down since 2026-10-05 (killed the coordination
+  loop; no worker could heartbeat). Restarted it and re-dispatched T5 to a
+  spawned worker; two spawn attempts died instantly because
+  `SPAWN_DEFAULT_MODEL` (`opencode-go/deepseek-v4-flash`) no longer exists
+  at the provider (only `deepseek-v4.1-flash`/`-pro` are offered) and
+  `--log` captured nothing (filed as a finding). Re-spawned with
+  `AB_SPAWN_MODEL=opencode-go/deepseek-v4.1-flash`. A second T6/#117
+  worker stalled on a headless `external_directory` permission prompt
+  (by design: a worker cannot reach another worktree) — lesson: keep each
+  worker inside its own worktree. Overlapping producer sessions again
+  raced the ledger (#113) — the corrupted working-copy edit was discarded
+  and this clean ledger committed by one session.
